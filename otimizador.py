@@ -326,31 +326,71 @@ def comparar_cobertura(jogo, k, n=None, n_sim=20000, seed=7):
 
 
 # ---------------- modelo de popularidade ----------------
+# colunas do volante de cada jogo (desenhos no bilhete: linhas, colunas)
+VOLANTE = {"megasena": 10, "quina": 10, "duplasena": 10, "timemania": 10, "lotofacil": 5, "diadesorte": 7}
+PADROES = ["até 31 (datas)", "todos até 31", "maior sequência", "vizinhos", "mesma linha do volante",
+           "mesma coluna do volante", "mesma dezena", "múltiplos de 5", "progressão aritmética",
+           "repetidos do concurso anterior", "soma fora do centro", "desequilíbrio par/ímpar", "espalhamento"]
+
+
 def _pop_path(jogo):
     return os.path.join(DATA, f"popularidade_{jogo}.json")
 
 
-def pesos_popularidade(jogo):
+def _modelo(jogo):
     try:
         with open(_pop_path(jogo), encoding="utf8") as f:
-            m = json.load(f)
-        return {int(k): v for k, v in m["pesos"].items()} if m.get("confiavel") else None
-    except (OSError, ValueError, KeyError):
+            return json.load(f)
+    except (OSError, ValueError):
         return None
 
 
+def pesos_popularidade(jogo):
+    m = _modelo(jogo)
+    if not m or not m.get("confiavel"):
+        return None
+    return {int(k): v for k, v in m["pesos"].items()}
+
+
+def _padroes(jogo, dz, anterior):
+    """Como as pessoas escolhem números: datas, sequências, desenhos no volante, repetir o último resultado.
+    Cada padrão vira um número; o modelo aprende quanto cada um atrai apostas."""
+    N, K = JOGOS[jogo][:2]
+    s = sorted(dz)
+    n = len(s)
+    cols = VOLANTE.get(jogo, 10)
+    difs = [b - a for a, b in zip(s, s[1:])]
+    run = best = 1
+    for d in difs:
+        run = run + 1 if d == 1 else 1
+        best = max(best, run)
+    linhas = Counter((x - 1) // cols for x in s)
+    colunas = Counter((x - 1) % cols for x in s)
+    dezenas = Counter((x - 1) // 10 for x in s)
+    datas = sum(x <= 31 for x in s) / n if N > 31 else 0.0
+    media = n * (N + 1) / 2
+    dp = math.sqrt(n * (N - n) * (N + 1) / 12) or 1
+    pares = sum(x % 2 == 0 for x in s)
+    esp_dif = (N + 1) / (n + 1)
+    return [datas, float(datas == 1.0), best / n, sum(d == 1 for d in difs) / n, max(linhas.values()) / n,
+            max(colunas.values()) / n, max(dezenas.values()) / n, sum(x % 5 == 0 for x in s) / n,
+            float(len(set(difs)) == 1), len(set(s) & set(anterior)) / n, abs(sum(s) - media) / dp,
+            abs(pares - n / 2) / n, (sum((d - esp_dif) ** 2 for d in difs) / max(1, len(difs))) ** 0.5 / esp_dif]
+
+
 def _amostras(jogo):
-    """(dezenas sorteadas, alvo) por concurso: log(ganhadores observados / ganhadores esperados pelo acaso)
-    na faixa com mais ganhadores. Se os números sorteados forem populares, sai mais gente ganhando."""
+    """(dezenas sorteadas, alvo, sorteio anterior) por concurso: alvo = log(ganhadores observados / esperados
+    pelo acaso) na faixa com mais ganhadores. Se os números sorteados forem populares, sai mais gente ganhando."""
     N, K, mn, fx, preco = JOGOS[jogo]
-    rows = db().execute("SELECT dezenas, meta FROM draws WHERE jogo=? AND meta IS NOT NULL ORDER BY concurso",
-                        (jogo,)).fetchall()
-    out = []
+    rows = db().execute("SELECT concurso, dezenas, meta FROM draws WHERE jogo=? AND meta IS NOT NULL "
+                        "ORDER BY concurso", (jogo,)).fetchall()
+    out, anterior = [], []
     faixa = min(h for h in fx if h > 0)
-    for dz, meta in rows:
-        m = json.loads(meta)
+    for conc, dz, meta in rows:
+        dz, m = json.loads(dz), json.loads(meta)
+        ant, anterior = anterior, dz
         pr, gan, vendas = m.get("premios", []), m.get("ganhadores", []), m.get("arrecadado") or 0
-        if not gan or not vendas:
+        if not gan or not vendas or not ant:
             continue
         g = next((g for (desc, _), g in zip(pr, gan) if desc.lower().startswith(f"{faixa} acerto")), None)
         if g is None:
@@ -358,75 +398,161 @@ def _amostras(jogo):
         esperado = vendas / preco * hypergeom(N, K, mn, faixa)
         if esperado < 5:
             continue
-        out.append((json.loads(dz), math.log((g + 0.5) / esperado)))
+        out.append({"concurso": conc, "dz": dz, "y": math.log((g + 0.5) / esperado), "ant": ant})
     return out
 
 
-def treinar_popularidade(jogo, epocas=200, lr=0.1, l2=1e-3, teste=0.2):
-    """Rede de 1 camada (regressão log-linear) treinada em ordem cronológica. A nota é a correlação, nos
-    concursos mais recentes que o modelo não viu, entre a soma dos pesos das dezenas sorteadas e o excesso de
-    ganhadores: mede só o efeito dos números, não o nível geral de vendas. Só é usada se passar no teste."""
+def _r2(prev, ys):
+    """Correlação² com sinal entre previsão e alvo: mede só o efeito dos números, não o nível de vendas."""
+    mx, my = sum(prev) / len(prev), sum(ys) / len(ys)
+    sxy = sum((a - mx) * (c - my) for a, c in zip(prev, ys))
+    sxx, syy = sum((a - mx) ** 2 for a in prev), sum((c - my) ** 2 for c in ys)
+    return (sxy * sxy / (sxx * syy) if sxx and syy else 0) * (1 if sxy > 0 else -1)
+
+
+def _resolver(A, b):
+    """Sistema linear A x = b por eliminação de Gauss com pivô parcial (A pequena: números + padrões)."""
+    n = len(b)
+    M = [row[:] + [b[i]] for i, row in enumerate(A)]
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(M[r][c]))
+        M[c], M[p] = M[p], M[c]
+        piv = M[c][c]
+        for r in range(c + 1, n):
+            f = M[r][c] / piv
+            if f:
+                for k in range(c, n + 1):
+                    M[r][k] -= f * M[c][k]
+    x = [0.0] * n
+    for c in range(n - 1, -1, -1):
+        x[c] = (M[c][n] - sum(M[c][k] * x[k] for k in range(c + 1, n))) / M[c][c]
+    return x
+
+
+def _sistema(jogo, treino, com_padroes):
+    """Monta X'X e X'y (centrados) da rede de 1 camada: um peso por número e, na v2, um por padrão.
+    Montado uma vez e reaproveitado para cada força de regularização."""
+    N = JOGOS[jogo][0]
+    F = len(PADROES) if com_padroes else 0
+    feats = [_padroes(jogo, a["dz"], a["ant"]) for a in treino] if F else []
+    med = [sum(f[i] for f in feats) / len(feats) for i in range(F)]
+    dp = [max(1e-9, (sum((f[i] - med[i]) ** 2 for f in feats) / len(feats)) ** 0.5) for i in range(F)]
+    D = N + F
+    linhas = []
+    for t, a in enumerate(treino):
+        x = [0.0] * D
+        for d in a["dz"]:
+            x[d - 1] = 1.0
+        for i in range(F):
+            x[N + i] = (feats[t][i] - med[i]) / dp[i]
+        linhas.append(x)
+    my = sum(a["y"] for a in treino) / len(treino)
+    mx = [sum(x[j] for x in linhas) / len(linhas) for j in range(D)]
+    A = [[0.0] * D for _ in range(D)]
+    rhs = [0.0] * D
+    for x, a in zip(linhas, treino):
+        xc = [xi - m for xi, m in zip(x, mx)]
+        yc = a["y"] - my
+        for j in range(D):
+            if xc[j]:
+                rhs[j] += xc[j] * yc
+                row, xj = A[j], xc[j]
+                for k in range(j, D):
+                    row[k] += xj * xc[k]
+    for j in range(D):
+        for k in range(j):
+            A[j][k] = A[k][j]
+    return {"A": A, "rhs": rhs, "N": N, "pad_media": med, "pad_dp": dp}
+
+
+def _ridge(sis, lam):
+    """Regressão ridge exata: sem passos de gradiente, não diverge; 'lam' encolhe os pesos para não decorar ruído."""
+    A = [row[:] for row in sis["A"]]
+    for j in range(len(A)):
+        A[j][j] += lam
+    coef = _resolver(A, sis["rhs"])
+    N = sis["N"]
+    media = sum(coef[:N]) / N
+    return {"pesos": {i + 1: coef[i] - media for i in range(N)}, "padroes": coef[N:], "pad_media": sis["pad_media"],
+            "pad_dp": sis["pad_dp"], "lambda": lam}
+
+
+def _treina(jogo, treino, com_padroes):
+    """Escolhe a força da regularização numa validação (último quarto do treino) e treina com o treino todo."""
+    corte = int(len(treino) * 0.75)
+    fit, val = treino[:corte], treino[corte:]
+    sis = _sistema(jogo, fit, com_padroes)
+    ys = [a["y"] for a in val]
+    notas = {}
+    for lam in (10.0, 30.0, 100.0, 300.0, 1000.0):
+        m = _ridge(sis, lam)
+        notas[lam] = _r2([_prever(jogo, m, a["dz"], a["ant"]) for a in val], ys)
+    return _ridge(_sistema(jogo, treino, com_padroes), max(notas, key=notas.get))
+
+
+def _prever(jogo, mod, dz, anterior):
+    """Log do fator de divisão: quanto mais (ou menos) gente que a média joga esta combinação."""
+    s = sum(mod["pesos"].get(x, mod["pesos"].get(str(x), 0)) for x in dz)
+    if mod.get("padroes"):
+        f = _padroes(jogo, dz, anterior)
+        s += sum(v * (fi - m) / d for v, fi, m, d in zip(mod["padroes"], f, mod["pad_media"], mod["pad_dp"]))
+    return s
+
+
+def treinar_popularidade(jogo, teste=0.2):
+    """Treina duas redes de 1 camada em ordem cronológica: v1 (um peso por número) e v2 (números + padrões de
+    escolha). A nota é a correlação, nos concursos recentes que o modelo não viu, entre a previsão e o excesso de
+    ganhadores. Fica a versão com melhor nota no teste; só é usada se passar de 5%."""
     if jogo not in POP_JOGOS:
         raise ValueError(f"Popularidade só para: {', '.join(POP_JOGOS)}.")
     dados = _amostras(jogo)
     if len(dados) < 200:
         raise ValueError(f"{jogo}: poucos concursos com número de ganhadores ({len(dados)}). "
                          "Baixe os resultados de novo e tente.")
-    N, K = JOGOS[jogo][:2]
-    lr /= K   # cada concurso ativa K pesos de uma vez
+    N = JOGOS[jogo][0]
     corte = int(len(dados) * (1 - teste))
     treino, prova = dados[:corte], dados[corte:]
-    b = sum(y for _, y in treino) / len(treino)
-    w = {i: 0.0 for i in range(1, N + 1)}
-    rng = random.Random(1)
-    ordem = list(range(len(treino)))
-    for _ in range(epocas):
-        rng.shuffle(ordem)
-        for t in ordem:
-            dz, y = treino[t]
-            erro = b + sum(w[x] for x in dz) - y
-            b -= lr * erro
-            for x in dz:
-                w[x] -= lr * (erro + l2 * w[x])
-
-    def r2(conj):
-        xs = [sum(w[x] for x in dz) for dz, _ in conj]
-        ys = [y for _, y in conj]
-        mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
-        sxy = sum((a - mx) * (c - my) for a, c in zip(xs, ys))
-        sxx, syy = sum((a - mx) ** 2 for a in xs), sum((c - my) ** 2 for c in ys)
-        return (sxy * sxy / (sxx * syy) if sxx and syy else 0) * (1 if sxy > 0 else -1)
-
-    r2_teste = r2(prova)
-    # com ~400 concursos de teste, r² > 5% corresponde a p < 0,0001: dificilmente é acaso
-    confiavel = r2_teste > 0.05
-    media = sum(w.values()) / N
-    w = {i: v - media for i, v in w.items()}
+    versoes = {}
+    for nome, pad in (("v1", False), ("v2", True)):
+        mod = _treina(jogo, treino, pad)
+        mod["r2_teste"] = _r2([_prever(jogo, mod, a["dz"], a["ant"]) for a in prova], [a["y"] for a in prova])
+        mod["r2_treino"] = _r2([_prever(jogo, mod, a["dz"], a["ant"]) for a in treino], [a["y"] for a in treino])
+        versoes[nome] = mod
+    nome = "v2" if versoes["v2"]["r2_teste"] > versoes["v1"]["r2_teste"] else "v1"
+    mod = versoes[nome]
+    w = mod["pesos"]
     datas = (sum(w[i] for i in range(1, min(N, 31) + 1)) / min(N, 31) -
              (sum(w[i] for i in range(32, N + 1)) / (N - 31) if N > 31 else 0))
-    modelo = {"jogo": jogo, "pesos": w, "r2_teste": r2_teste, "r2_treino": r2(treino), "confiavel": confiavel,
-              "concursos": len(dados), "efeito_datas": datas}
+    modelo = {"jogo": jogo, "versao": nome, **mod, "confiavel": mod["r2_teste"] > 0.05,
+              "r2_v1": versoes["v1"]["r2_teste"], "r2_v2": versoes["v2"]["r2_teste"], "concursos": len(dados),
+              "inicio_teste": prova[0]["concurso"], "efeito_datas": datas, "anterior": dados[-1]["dz"]}
     with open(_pop_path(jogo), "w", encoding="utf8") as f:
         json.dump(modelo, f)
     return modelo
 
 
 def texto_popularidade(m):
-    jogo, w = m["jogo"], m["pesos"]
+    jogo, w = m["jogo"], {int(k): v for k, v in m["pesos"].items()}
     mais = sorted(w, key=w.get, reverse=True)[:10]
     menos = sorted(w, key=w.get)[:10]
     fx = lambda v: f"{math.exp(v):.2f}x"
     out = [f"=== MODELO DE POPULARIDADE: {jogo.upper()} ({m['concursos']} concursos) ===",
-           "Aprende quais números o público mais joga comparando, em cada concurso, quantas pessoas ganharam "
-           "com quantas deveriam ganhar pelo acaso.", "",
-           f"Poder explicativo no teste (r², concursos recentes que o modelo não viu): {m['r2_teste']:.1%}"
-           f"  |  no treino: {m['r2_treino']:.1%}",
-           "  -> " + ("CONFIÁVEL: o modelo explica parte real da divisão de prêmios e passa a ser usado nos cartões."
+           "Aprende o que o público mais joga comparando, em cada concurso, quantas pessoas ganharam com quantas "
+           "deveriam ganhar pelo acaso.", "",
+           "Poder explicativo no teste (r², concursos recentes que o modelo não viu):",
+           f"  v1 (só números): {m.get('r2_v1', m['r2_teste']):.1%}   |   "
+           f"v2 (números + padrões de escolha): {m.get('r2_v2', 0):.1%}   ->   em uso: {m.get('versao', 'v1')}",
+           "  -> " + ("CONFIÁVEL: explica parte real da divisão de prêmios e passa a ser usado nos cartões."
                       if m["confiavel"] else
                       "NÃO CONFIÁVEL: abaixo de 5% no teste. O app não usa estes pesos (seria ruído)."), "",
            "Mais jogados (dividem mais o prêmio): " + ", ".join(f"{x:02d} ({fx(w[x])})" for x in mais),
            "Menos jogados (dividem menos):        " + ", ".join(f"{x:02d} ({fx(w[x])})" for x in menos)]
-    if JOGOS[jogo][0] > 31:
+    if m.get("versao") == "v2":
+        # efeito de 1 desvio-padrão de cada padrão
+        efeitos = sorted(zip(PADROES, m["padroes"]), key=lambda p: -abs(p[1]))
+        out += ["", "Padrões de escolha (efeito sobre o número de ganhadores):"]
+        out += [f"  {nome:<34}{math.exp(v) - 1:+.0%}" for nome, v in efeitos if abs(v) >= 0.01]
+    if JOGOS[jogo][0] > 31 and m.get("versao") != "v2":
         out.append(f"Efeito 'datas de aniversário' (1 a 31 x 32+): {fx(m['efeito_datas'])} mais ganhadores por número.")
     out += ["", "Isto não muda a chance de acertar: muda quantas pessoas dividem o prêmio com você se acertar."]
     return "\n".join(out)
@@ -434,10 +560,69 @@ def texto_popularidade(m):
 
 def fator_divisao(jogo, card):
     """Quantas vezes mais (ou menos) gente que a média deve ter o mesmo cartão, pelo modelo treinado."""
-    w = pesos_popularidade(jogo)
-    if not w or jogo == "supersete":
+    m = _modelo(jogo)
+    if not m or not m.get("confiavel") or jogo == "supersete":
         return None
-    return math.exp(sum(w.get(x, 0) for x in card))
+    return math.exp(_prever(jogo, m, card, m.get("anterior", [])))
+
+
+MIN_ACUM = {"lotofacil": 2, "diadesorte": 6}
+
+
+def estudo_acumulados(jogo, min_acum=None):
+    """Prêmios principais que acumularam por vários concursos: quão populares eram as dezenas que finalmente
+    saíram, segundo os ganhadores reais das faixas menores e segundo o modelo."""
+    min_acum = min_acum or MIN_ACUM.get(jogo, 8)
+    m = _modelo(jogo)
+    if not m:
+        m = treinar_popularidade(jogo)
+    dados = {a["concurso"]: a for a in _amostras(jogo)}
+    if not dados:
+        raise ValueError(f"{jogo}: baixe os resultados primeiro.")
+    nivel = sorted(a["y"] for a in dados.values())[len(dados) // 2]   # nível típico, para comparar
+    rows = db().execute("SELECT concurso, meta FROM draws WHERE jogo=? AND meta IS NOT NULL ORDER BY concurso",
+                        (jogo,)).fetchall()
+    casos, acum = [], 0
+    for conc, meta in rows:
+        top = (json.loads(meta).get("ganhadores") or [0])[0]
+        if top:
+            if acum >= min_acum and conc in dados:
+                a = dados[conc]
+                casos.append({"concurso": conc, "acumulou": acum, "ganhadores": top, "dz": a["dz"],
+                              "real": math.exp(a["y"] - nivel),
+                              "modelo": math.exp(_prever(jogo, m, a["dz"], a["ant"])),
+                              "no_teste": conc >= m.get("inicio_teste", 10 ** 9)})
+            acum = 0
+        else:
+            acum += 1
+    return {"jogo": jogo, "versao": m.get("versao", "v1"), "casos": casos, "min_acum": min_acum}
+
+
+def texto_acumulados(r):
+    casos = r["casos"]
+    out = [f"=== ACUMULADOS QUE SAÍRAM: {r['jogo'].upper()} ({r['min_acum']}+ concursos sem ganhador, "
+           f"modelo {r['versao']}) ===",
+           "Real = ganhadores das faixas menores em relação ao típico (abaixo de 1,00 = combinação pouco jogada).",
+           "Modelo = o que a rede estimou só olhando as dezenas. Ela acerta a ORDEM (qual é mais ou menos jogada); "
+           "os valores ficam mais perto de 1 porque a regularização encolhe a previsão de propósito.",
+           "Teste = o concurso estava entre os que o modelo não viu no treino.", "",
+           f"{'Concurso':>9}{'Acumulou':>10}{'Ganhad.':>9}  {'Dezenas':<30}{'Real':>7}{'Modelo':>8}  Teste?"]
+    for c in casos[-15:]:
+        dz = " ".join(f"{x:02d}" for x in sorted(c["dz"]))
+        out.append(f"{c['concurso']:>9}{c['acumulou']:>10}{c['ganhadores']:>9}  {dz:<30}{c['real']:>7.2f}"
+                   f"{c['modelo']:>8.2f}  {'sim' if c['no_teste'] else 'não'}")
+    if casos:
+        reais = [c["real"] for c in casos]
+        abaixo = sum(x < 1 for x in reais)
+        out += ["", f"{len(casos)} prêmios que acumularam e saíram: em {abaixo} ({abaixo / len(casos):.0%}) a "
+                    f"combinação era menos jogada que o típico (mediana {sorted(reais)[len(reais) // 2]:.2f}x)."]
+        teste = [c for c in casos if c["no_teste"]]
+        if len(teste) >= 5:
+            r2 = _r2([math.log(c["modelo"]) for c in teste], [math.log(c["real"]) for c in teste])
+            out.append(f"Nos casos que o modelo não viu no treino, ele explica {max(0, r2):.0%} da popularidade real.")
+    out += ["", "Faz sentido: combinação pouco jogada demora mais para ter ganhador, e quando sai, sai para "
+                "poucos. A chance de cada combinação ser sorteada continua igual."]
+    return "\n".join(out)
 
 
 # ---------------- treino automático ----------------

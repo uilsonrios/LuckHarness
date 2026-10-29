@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")

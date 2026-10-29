@@ -27,7 +27,7 @@ O Windows pode mostrar o aviso "O Windows protegeu o computador", porque o execu
 
 - **Escolha do jogo.** Com o mesmo dinheiro, a Lotofácil premia cerca de 245 vezes mais vezes que a Mega-Sena.
 - **Cartões espalhados.** Os cartões repetem o mínimo de números entre si. Times, meses e trevos também não se repetem: com 12 cartões no Dia de Sorte, o Mês da Sorte sai em todo concurso.
-- **Modelo de popularidade.** É uma rede de 1 camada que aprende quais números o público mais joga, a partir do número real de ganhadores de cada concurso. O app só usa o modelo de um jogo quando ele acerta em concursos que não viu no treino. Números pouco jogados dividem menos o prêmio, mas a chance de acertar continua a mesma.
+- **Modelo de popularidade.** É uma rede de 1 camada que aprende o que o público mais joga (números e padrões de escolha: datas, sequências, desenhos no volante, repetir o último resultado), a partir do número real de ganhadores de cada concurso. O botão "Acumulados que saíram" mostra, nos prêmios que ficaram vários concursos sem ganhador, que a maioria era de combinações pouco jogadas. O app só usa o modelo de um jogo quando ele acerta em concursos que não viu no treino. Números pouco jogados dividem menos o prêmio, mas a chance de acertar continua a mesma.
 - **Teste no passado.** O plano é jogado nos concursos reais, com os prêmios pagos de verdade, e comparado com cartões ao acaso.
 
 Exemplo dos últimos 104 concursos, com o mesmo gasto:

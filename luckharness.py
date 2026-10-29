@@ -478,6 +478,8 @@ class App(tk.Tk):
                    command=self.run_pop).pack(side="left")
         ttk.Button(r2, text="Chances de todos os jogos", style="Ghost.TButton",
                    command=lambda: self.bg_otim(tabela_chances)).pack(side="left", padx=6)
+        ttk.Button(r2, text="Acumulados que saíram (jogo)", style="Ghost.TButton",
+                   command=self.run_acumulados).pack(side="left")
         r3 = ttk.Frame(f, style="Card.TFrame"); r3.pack(fill="x", pady=(0, 8))
         ttk.Label(r3, text="Testar o plano nos últimos", style="Muted.TLabel").pack(side="left")
         self.o_conc = tk.IntVar(value=104)
@@ -584,6 +586,13 @@ class App(tk.Tk):
     def run_auditoria(self):
         jogo = self.jogo.get()
         self.bg_otim(lambda: texto_auditoria(auditoria(jogo)))
+
+    def run_acumulados(self):
+        jogo = self.jogo.get()
+        if jogo not in POP_JOGOS:
+            messagebox.showinfo("Acumulados", f"Disponível para: {', '.join(POP_JOGOS)}.")
+            return
+        self.bg_otim(lambda: texto_acumulados(estudo_acumulados(jogo)))
 
     def run_pop(self):
         jogo = self.jogo.get()

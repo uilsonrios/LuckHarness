@@ -110,3 +110,25 @@ def test_ganho_cartao_com_mais_dezenas():
     # 7 dezenas com 5 acertos = 2 quinas + 5 quadras
     g, _ = o._ganho_cartao("megasena", [1, 2, 3, 4, 5, 50, 51], [], [1, 2, 3, 4, 5, 60], meta)
     assert g == 2 * 1000 + 5 * 100
+
+
+def test_v2_aprende_padrao_de_escolha():
+    """Público que joga sequências: a v2 (com padrões) deve vencer a v1 no teste."""
+    rng = random.Random(5)
+    N, K, mn, fx, preco = core.JOGOS["megasena"]
+    vendas = 10_000_000
+    esperado = vendas / preco * core.hypergeom(N, K, mn, 4)
+    with core.db() as c:
+        c.execute("DELETE FROM draws WHERE jogo='megasena'")
+        for i in range(1500):
+            dz = sorted(rng.sample(range(1, N + 1), K))
+            seq = sum(b - a == 1 for a, b in zip(dz, dz[1:]))
+            g = esperado * pow(2.718281828, 0.4 * seq + rng.gauss(0, 0.1))
+            meta = {"premios": [["4 acertos", 10]], "ganhadores": [int(g)], "arrecadado": vendas}
+            c.execute("INSERT INTO draws(jogo, concurso, dezenas, meta) VALUES(?,?,?,?)",
+                      ("megasena", i + 1, json.dumps(dz), json.dumps(meta)))
+    m = o.treinar_popularidade("megasena")
+    assert m["versao"] == "v2" and m["r2_v2"] > m["r2_v1"] + 0.2
+    assert o.fator_divisao("megasena", [1, 2, 3, 4, 5, 6]) > o.fator_divisao("megasena", [3, 14, 25, 36, 47, 58])
+    r = o.estudo_acumulados("megasena")
+    assert r["casos"] == []   # sem ganhadores da sena nos dados sintéticos
