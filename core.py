@@ -210,7 +210,7 @@ def sync_draws(jogo, n=50, log=print):
             try:
                 return fetch(jogo, k)
             except Exception:
-                log.warning("concurso %s %s indisponível", jogo, k, exc_info=True)
+                logging.getLogger("luckharness").warning("concurso %s %s indisponível", jogo, k, exc_info=True)
         with ThreadPoolExecutor(8) as ex:
             achados = [d for d in ex.map(busca, faltam) if d]
         if len(achados) < len(faltam):

@@ -187,3 +187,19 @@ def test_aposta_com_mais_dezenas_soma_todas_as_simples():
     core.save_bet("gabi", "maismilionaria", [1, 2, 3, 4, 40, 41], [1, 2, 3], 71)
     # pares de trevos: (1,2) acerta 2; (1,3) e (2,3) acertam 1
     assert core.check_bets("gabi")[0]["ganhos"] == 50 + 2 * 20
+
+
+def test_sync_sem_espelho_com_concurso_faltando(monkeypatch):
+    # espelho fora do ar e um concurso da Caixa falhando: não pode quebrar (log=print não tem .warning)
+    def get(url, timeout=15):
+        raise OSError("fora do ar")
+
+    def fetch(jogo, k=""):
+        if k == 498:
+            raise OSError("timeout")
+        return {"concurso": k or 500, "dezenas": ["1", "2", "3", "4", "5"], "data": "", "trevos": [], "premios": []}
+    monkeypatch.setattr(core, "_get", get)
+    monkeypatch.setattr(core, "fetch", fetch)
+    msgs = []
+    assert core.sync_draws("quina", 5, log=msgs.append) == 4
+    assert any("não baixaram" in m for m in msgs)
