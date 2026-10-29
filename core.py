@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.12.0"
+__version__ = "1.13.0"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -914,6 +914,8 @@ def parse_bet(jogo, txt):
         faixa = str(mn) if mn == MAX_DEZ[jogo] else f"{mn} a {MAX_DEZ[jogo]}"
         raise ValueError(f"{jogo}: marque {faixa} dezenas (você marcou {len(nums)}).")
     trevos = []
+    if tr.strip() and jogo not in EXTRA and jogo != "maismilionaria":
+        raise ValueError(f"{jogo}: este jogo não tem nada depois de '+' (sem trevo, time ou mês).")
     if jogo in EXTRA and tr.strip():
         trevos = [_extra(jogo, tr, validar=True)]
     if jogo == "maismilionaria":
@@ -941,9 +943,11 @@ def _extra(jogo, txt, validar=False):
     if jogo == "diadesorte":
         if t.isdigit() and 1 <= int(t) <= 12:
             return MESES[int(t) - 1]
-        for m in MESES:
-            if t and _norm(m).startswith(t[:3]):
-                return m
+        achou = [m for m in MESES if t and _norm(m).startswith(t)]
+        if len(achou) == 1:
+            return achou[0]
+        if len(achou) > 1 and validar:   # "ma" = março ou maio, "ju" = junho ou julho
+            raise ValueError(f"Dia de Sorte: '{txt}' pode ser {' ou '.join(achou)}. Escreva mais letras ou o número do mês.")
         if validar:
             raise ValueError("Dia de Sorte: informe o mês depois de '+', ex.: 01 02 03 04 05 06 07 + outubro")
         return txt
@@ -1043,6 +1047,37 @@ def apostas_simples(jogo, nums, trevos):
 
 def custo(jogo, nums, trevos):
     return JOGOS[jogo][4] * apostas_simples(jogo, nums, trevos)
+
+
+NOMES = {"megasena": "Mega-Sena", "lotofacil": "Lotofácil", "quina": "Quina", "lotomania": "Lotomania",
+         "duplasena": "Dupla Sena", "timemania": "Timemania", "diadesorte": "Dia de Sorte",
+         "maismilionaria": "+Milionária", "supersete": "Super Sete"}
+
+
+# dias de sorteio (0 = segunda). Feriados e concursos especiais podem mudar a data: confira na lotérica.
+DIAS_SORTEIO = {"megasena": (1, 3, 5), "lotofacil": (0, 1, 2, 3, 4, 5), "quina": (0, 1, 2, 3, 4, 5),
+                "lotomania": (0, 2, 4), "duplasena": (0, 2, 4), "timemania": (1, 3, 5), "diadesorte": (1, 3, 5),
+                "maismilionaria": (2, 5), "supersete": (0, 2, 4)}
+DIAS = ("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")
+
+
+def proximo_sorteio(jogo, hoje=None):
+    """Data do próximo sorteio pelo calendário fixo (hoje conta: o sorteio é à noite)."""
+    from datetime import timedelta
+    hoje = hoje or date.today()
+    return next(d for d in (hoje + timedelta(i) for i in range(8)) if d.weekday() in DIAS_SORTEIO[jogo])
+
+
+def texto_calendario(hoje=None):
+    hoje = hoje or date.today()
+    out = ["Próximos sorteios (à noite, horário de Brasília; as apostas fecham cerca de 1 h antes):"]
+    for j in sorted(DIAS_SORTEIO, key=lambda j: proximo_sorteio(j, hoje)):
+        d = proximo_sorteio(j, hoje)
+        quando = "hoje" if d == hoje else DIAS[d.weekday()] + " " + d.strftime("%d/%m")
+        dias = ", ".join(DIAS[x][:3] for x in DIAS_SORTEIO[j])
+        out.append(f"  {NOMES[j]:<14} {quando:<17} (sorteia {dias})")
+    out.append("Feriados e concursos especiais podem mudar a data.")
+    return "\n".join(out)
 
 
 def brl(v):

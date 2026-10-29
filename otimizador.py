@@ -33,12 +33,13 @@ def _sem_extra(jogo, k):
     return max(0.0, 1 - min(k, opcoes_extra) / opcoes_extra)
 
 
-def prob_cartoes(jogo, p_dezenas_1, k):
-    """P(algum de k cartões espalhados premiar): dezenas quase independentes, time/mês sem repetir."""
+def prob_cartoes(jogo, p_dezenas_1, k, extra=True):
+    """P(algum de k cartões espalhados premiar): dezenas quase independentes, time/mês sem repetir.
+    extra=False: só prêmios das dezenas (o time/mês sozinho devolve pouco mais que o preço do cartão)."""
     p_dz = 1 - (1 - p_dezenas_1) ** k
     if jogo == "duplasena":
         p_dz = 1 - (1 - p_dz) ** 2
-    return 1 - (1 - p_dz) * _sem_extra(jogo, k)
+    return 1 - (1 - p_dz) * (_sem_extra(jogo, k) if extra else 1)
 
 
 def prob_premio(jogo, n=None, trevos=2, extra=True):
@@ -109,6 +110,7 @@ def opcoes(orcamento, jogos=None):
                 pd = 1 - (1 - pd) ** 0.5   # prob_cartoes aplica os dois sorteios
             ps = prob_cartoes(j, pd, k)
             out.append({"jogo": j, "tipo": "simples", "n": n, "k": k, "custo": c, "gasto": k * c, "p_semana": ps,
+                        "p_dezenas": prob_cartoes(j, pd, k, extra=False),
                         "p_principal_ano": 1 - (1 - prob_principal(j, n)) ** (k * 52), "retorno": ret,
                         "plano": f"{k} cartão(ões) de {n}"})
         out += _opcoes_bolao(j, orcamento, ret) + _opcoes_fechamento(j, orcamento, ret)
@@ -127,7 +129,7 @@ def _opcoes_bolao(j, orcamento, ret):
         if q > 100:   # limite prático de cotas
             break
         out.append({"jogo": j, "tipo": "bolão", "n": n, "k": 1, "cotas": q, "custo": c, "gasto": c / q,
-                    "p_semana": prob_premio(j, n), "p_principal_ano": 1 - (1 - prob_principal(j, n) / q) ** 52,
+                    "p_semana": prob_premio(j, n), "p_dezenas": prob_premio(j, n, extra=False), "p_principal_ano": 1 - (1 - prob_principal(j, n) / q) ** 52,
                     "retorno": ret, "plano": f"bolão {n} dez., 1/{q} cota"})
     return out
 
@@ -156,9 +158,10 @@ def _opcoes_fechamento(j, orcamento, ret):
         p = simular_cobertura(j, cards, 4000, random.Random(v))
         if j == "duplasena":
             p = 1 - (1 - p) ** 2
+        p_dz = p
         p = 1 - (1 - p) * _sem_extra(j, len(cards))
         out.append({"jogo": j, "tipo": "fechamento", "n": mn, "k": len(cards), "v": v, "t": t, "custo": preco,
-                    "gasto": gasto, "p_semana": p, "p_garantia": p_gar, "p_principal_ano": 1 - (1 - prob_principal(j) * len(cards)) ** 52,
+                    "gasto": gasto, "p_semana": p, "p_dezenas": p_dz, "p_garantia": p_gar, "p_principal_ano": 1 - (1 - prob_principal(j) * len(cards)) ** 52,
                     "retorno": ret, "cards_base": cards,
                     "plano": f"fechamento {v} dez., {len(cards)} cart."})
     return out
@@ -170,7 +173,9 @@ def otimizar(orcamento, objetivo="frequente", jogos=None, top=8):
     ops = opcoes(orcamento, jogos)
     if not ops:
         raise ValueError(f"Com {brl(orcamento)} por semana não dá para fazer nenhuma aposta.")
-    chave = {"frequente": lambda o: (o["p_semana"], -o["gasto"]),
+    # "frequente" conta só prêmios das dezenas: 12 cartões de Dia de Sorte "premiam sempre" pelo Mês da Sorte,
+    # mas gastam R$ 30 para receber R$ 2,50
+    chave = {"frequente": lambda o: (o.get("p_dezenas", o["p_semana"]), -o["gasto"]),
              "grande": lambda o: (o["p_principal_ano"], o["p_semana"]),
              "retorno": lambda o: ((o["retorno"] or 0), o["p_semana"])}[objetivo]
     melhor = {}
@@ -185,10 +190,11 @@ def texto_plano(orcamento, objetivo, ranking):
            f"{'Principal/ano':>15}{'Retorno':>9}"]
     for i, o in enumerate(ranking, 1):
         plano = o["plano"]
-        semanas = 1 / o["p_semana"]
+        pd = o.get("p_dezenas", o["p_semana"])
+        semanas = 1 / pd
         cada = f"{semanas:.1f} sem" if semanas < 100 else f"{semanas / 52:,.0f} anos".replace(",", ".")
         ret = f"{o['retorno']:.0%}" if o["retorno"] is not None else "-"
-        out.append(f"{i:<3}{o['jogo']:<15}{plano:<28}{brl(o['gasto']):>11}{o['p_semana']:>18.1%}{cada:>11}"
+        out.append(f"{i:<3}{o['jogo']:<15}{plano:<28}{brl(o['gasto']):>11}{pd:>18.1%}{cada:>11}"
                    f"{_um_em(o['p_principal_ano']) if o['p_principal_ano'] < .01 else format(o['p_principal_ano'], '.1%'):>15}"
                    f"{ret:>9}")
     b = ranking[0]
@@ -209,8 +215,8 @@ def texto_plano(orcamento, objetivo, ranking):
             val = premios_medios(b["jogo"])[0].get(desc)
         except Exception:
             val = None
-        out.append(f"Atenção: boa parte da frequência vem do {desc} (cada cartão com um diferente), que paga pouco"
-                   + (f": cerca de {brl(val)}." if val else "."))
+        out.append(f"'Prêmio na semana' conta só as dezenas. Com o {desc} (cada cartão com um diferente) a chance "
+                   f"sobe para {b['p_semana']:.0%}, mas ele paga pouco" + (f": cerca de {brl(val)}." if val else "."))
     out += [
             f"Em um ano: gasta {brl(anual)}, a matemática devolve em média {brl(volta)} em prêmios "
             f"(saldo esperado {brl(volta - anual)}).",

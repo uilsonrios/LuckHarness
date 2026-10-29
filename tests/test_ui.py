@@ -12,6 +12,7 @@ def app(monkeypatch):
     # sem rede nos testes: nada de baixar resultados nem procurar versão nova
     monkeypatch.setattr(ui.App, "auto_update", lambda self: None)
     monkeypatch.setattr(ui.App, "ver_update", lambda self: None)
+    monkeypatch.setattr(ui.App, "assistente", lambda self: None)
     monkeypatch.setattr(ui.messagebox, "showinfo", lambda *a, **k: None)
     monkeypatch.setattr(ui.messagebox, "showerror", lambda *a, **k: None)
     try:
@@ -98,3 +99,36 @@ def test_aposta_da_semana_monta_e_registra(app, monkeypatch):
     antes = core.banca_mes("ui_teste")[0]
     app.apostei()
     assert core.banca_mes("ui_teste")[0] == antes + 9
+
+
+def test_volante_marca_dezenas(app):
+    app.jogo.set("megasena")
+    app.bet_in.delete(0, "end"); app.bet_in.insert(0, "01 02")
+    app.volante()
+    w = app.janela_volante
+    grade = [c for c in w.winfo_children() if isinstance(c, tk.Frame)][0]
+    bts = {int(b.cget("text")): b for b in grade.winfo_children()}
+    for x in (10, 20, 30, 40):
+        bts[x].invoke()
+    bts[1].invoke()   # desmarca
+    [b for b in w.winfo_children()[-1].winfo_children() if b.cget("text") == "Usar estas dezenas"][0].invoke()
+    assert app.bet_in.get() == "02 10 20 30 40"
+
+
+
+_ASSISTENTE = ui.App.assistente   # o fixture desliga o assistente; este teste chama o original
+
+
+def test_assistente_salva_preferencias(app):
+    _ASSISTENTE(app)
+    w = app.janela_assistente
+    fr = w.winfo_children()[0]
+    g = [c for c in fr.winfo_children() if c.winfo_children() and isinstance(c.winfo_children()[0], ui.ttk.Label)][0]
+    jb, orc, lim = [c for c in g.winfo_children() if isinstance(c, ui.ttk.Entry)]
+    jb.set("quina")
+    orc.delete(0, "end"); orc.insert(0, "25")
+    lim.insert(0, "200")
+    [b for b in fr.winfo_children()[-1].winfo_children() if b.cget("text") == "Começar"][0].invoke()
+    pr = core.load_prefs()
+    assert pr["jogo"] == "quina" and pr["orcamento"] == 25 and pr["limite_ui_teste"] == 200
+    assert pr["assistente_ui_teste"] and app.jogo.get() == "quina"

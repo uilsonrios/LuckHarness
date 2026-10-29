@@ -1,5 +1,5 @@
 """luckHarness - análise estatística de loterias com login e IA local (Ollama)."""
-import csv, math, os, queue, sys, threading, webbrowser
+import csv, math, os, queue, re, sys, threading, webbrowser
 from datetime import date
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, filedialog, simpledialog
@@ -14,9 +14,6 @@ import laboratorio as lab
 BG, CARD, FIELD, FG, MUTED, ACCENT = "#0f1117", "#181b24", "#232734", "#e6e8ee", "#8a90a2", "#00d4aa"
 WARN, IA_COLOR = "#ffb454", "#b8a4ff"
 FONT = "Segoe UI"
-NOMES = {"megasena": "Mega-Sena", "lotofacil": "Lotofácil", "quina": "Quina", "lotomania": "Lotomania",
-         "duplasena": "Dupla Sena", "timemania": "Timemania", "diadesorte": "Dia de Sorte",
-         "maismilionaria": "+Milionária", "supersete": "Super Sete"}
 
 
 class JogoBox(ttk.Combobox):
@@ -321,6 +318,8 @@ class App(tk.Tk):
         self.build_chat(body)
 
         self.refresh_banca()
+        if not pr.get(f"assistente_{user}"):
+            self.after(400, self.assistente)
         self.bg(self.auto_update)
         self.bg(self.ver_update)
 
@@ -372,6 +371,8 @@ class App(tk.Tk):
             side="left", padx=6)
         self.s_ok = ttk.Button(row, text="Apostei", style="Ghost.TButton", command=self.apostei, state="disabled")
         self.s_ok.pack(side="left")
+        ttk.Button(row, text="Calendário de sorteios", style="Small.TButton", command=lambda: (
+            self.s_out.delete("1.0", "end"), self.s_out.insert("end", texto_calendario()))).pack(side="right")
         self.s_out = text_box(f, wrap="word", font=(FONT, 10)); self.s_out.pack(fill="both", expand=True)
         self.s_out.tag_configure("head", foreground=ACCENT, font=(FONT, 11, "bold"))
         self.s_out.insert("end", "Escolha o jogo lá em cima, diga quanto quer gastar e clique em "
@@ -379,6 +380,97 @@ class App(tk.Tk):
                                  "(mais chance de algum prêmio) e, quando possível, com números pouco jogados "
                                  "(se ganhar, divide menos o prêmio). Ninguém prevê os números sorteados.")
         self.s_cards = []
+
+    def assistente(self):
+        """Primeiro uso: o que o app faz (sem promessa), jogo, quanto gastar por semana e limite do mês."""
+        w = tk.Toplevel(self); w.title("Bem-vindo ao LuckHarness"); w.configure(bg=CARD); w.transient(self)
+        fr = ttk.Frame(w, style="Card.TFrame", padding=20); fr.pack(fill="both", expand=True)
+        ttk.Label(fr, text="Antes de começar", style="Card.TLabel", font=(FONT, 13, "bold")).pack(anchor="w")
+        ttk.Label(fr, style="Card.TLabel", wraplength=440, justify="left", text=(
+            "Ninguém consegue prever os números sorteados: o app testou isso em milhares de concursos. "
+            "O que ele faz é tirar o máximo de cada real: escolhe o jogo que premia mais por real, espalha os "
+            "números entre os cartões e evita combinações muito jogadas (se ganhar, divide menos o prêmio). "
+            "Loteria é diversão, não investimento.")).pack(anchor="w", pady=(6, 14))
+        g = ttk.Frame(fr, style="Card.TFrame"); g.pack(fill="x")
+        ttk.Label(g, text="Jogo preferido", style="Card.TLabel").grid(row=0, column=0, sticky="w", pady=4)
+        jb = JogoBox(g, width=16); jb.set(self.jogo.get()); jb.grid(row=0, column=1, sticky="w", padx=8)
+        ttk.Label(g, text="Quanto quer gastar por semana (R$)", style="Card.TLabel").grid(row=1, column=0, sticky="w",
+                                                                                        pady=4)
+        orc = ttk.Entry(g, width=10); orc.insert(0, "15"); orc.grid(row=1, column=1, sticky="w", padx=8)
+        ttk.Label(g, text="Limite de gasto no mês (R$, opcional)", style="Card.TLabel").grid(row=2, column=0,
+                                                                                           sticky="w", pady=4)
+        lim = ttk.Entry(g, width=10); lim.grid(row=2, column=1, sticky="w", padx=8)
+
+        def valor(e):
+            try:
+                return max(0.0, float(e.get().replace("R$", "").replace(",", ".").strip() or 0))
+            except ValueError:
+                return 0.0
+
+        def pronto():
+            jogo = jb.get()
+            save_prefs(**{f"assistente_{self.user}": True, "jogo": jogo, "orcamento": valor(orc) or 15})
+            if valor(lim):
+                save_prefs(**{f"limite_{self.user}": valor(lim)})
+            self.jogo.set(jogo); self.on_jogo()
+            self.s_val.delete(0, "end"); self.s_val.insert(0, f"{valor(orc) or 15:g}")
+            self.b_lim.delete(0, "end"); self.b_lim.insert(0, f"{valor(lim):g}" if valor(lim) else "")
+            self.refresh_banca()
+            self.nb.select(0)
+            w.destroy()
+        b = ttk.Frame(fr, style="Card.TFrame"); b.pack(fill="x", pady=(16, 0))
+        ttk.Button(b, text="Começar", style="Accent.TButton", command=pronto).pack(side="right")
+        ttk.Button(b, text="Pular", style="Ghost.TButton", command=lambda: (
+            save_prefs(**{f"assistente_{self.user}": True}), w.destroy())).pack(side="right", padx=6)
+        self.janela_assistente = w
+
+    def volante(self):
+        """Marca as dezenas clicando, como no volante da lotérica."""
+        jogo = self.jogo.get()
+        if jogo == "supersete":
+            messagebox.showinfo("Volante", "No Super Sete digite 7 números de 0 a 9, um por coluna.")
+            return
+        N, mx = JOGOS[jogo][0], MAX_DEZ[jogo]
+        main, _, extra = self.bet_in.get().partition("+")
+        marcadas = {int(x) for x in re.findall(r"[0-9]+", main) if 1 <= int(x) <= N}
+        w = tk.Toplevel(self); w.title(f"Volante - {NOMES[jogo]}"); w.configure(bg=CARD); w.transient(self)
+        info = ttk.Label(w, style="Card.TLabel"); info.pack(pady=(10, 4))
+        grade = tk.Frame(w, bg=CARD); grade.pack(padx=12, pady=4)
+        botoes = {}
+        cols = 10
+
+        def pinta():
+            for x, bt in botoes.items():
+                bt.configure(bg=ACCENT if x in marcadas else FIELD, fg=BG if x in marcadas else FG)
+            info.configure(text=f"{len(marcadas)} marcada(s): mínimo {JOGOS[jogo][2]}, máximo {mx}")
+
+        def clica(x):
+            if x in marcadas:
+                marcadas.discard(x)
+            elif len(marcadas) < mx:
+                marcadas.add(x)
+            pinta()
+        for x in range(1, N + 1):
+            num = x % 100 if jogo == "lotomania" else x   # a Lotomania marca 00 no lugar do 100
+            bt = tk.Button(grade, text=f"{num:02d}", width=3, relief="flat", font=(FONT, 9, "bold"),
+                           command=lambda x=x: clica(x), cursor="hand2")
+            bt.grid(row=(x - 1) // cols, column=(x - 1) % cols, padx=1, pady=1)
+            botoes[x] = bt
+        pinta()
+
+        def ok():
+            txt = " ".join(f"{x:02d}" for x in sorted(marcadas))
+            self.bet_in.delete(0, "end")
+            self.bet_in.insert(0, txt + (" +" + extra if extra.strip() else ""))
+            w.destroy()
+        b = tk.Frame(w, bg=CARD); b.pack(fill="x", padx=12, pady=10)
+        ttk.Button(b, text="Usar estas dezenas", style="Accent.TButton", command=ok).pack(side="right")
+        ttk.Button(b, text="Limpar", style="Ghost.TButton",
+                   command=lambda: (marcadas.clear(), pinta())).pack(side="right", padx=6)
+        if jogo in EXTRA or jogo == "maismilionaria":
+            ttk.Label(b, style="Muted.TLabel", text="Trevos/time/mês: escreva depois de '+' no campo.").pack(
+                side="left")
+        self.janela_volante = w
 
     def montar_semana(self):
         try:
@@ -405,7 +497,10 @@ class App(tk.Tk):
                 linhas.append(f"  {i}. {fmt_bet(jogo, a, t)}"
                               + (f"   (se ganhar, divide {'menos' if fd < 1 else 'mais'} que a média)" if fd else ""))
             txt = "\n".join(linhas) + "\n\n" + texto_chances_cartoes(jogo, cards)
-            txt += f"\n\nGasto no mês até agora: {brl(g)}. Clique em 'Apostei' depois de jogar na lotérica."
+            d = proximo_sorteio(jogo)
+            quando = "hoje à noite" if d == date.today() else f"{DIAS[d.weekday()]}, {d.strftime('%d/%m')}"
+            txt += (f"\n\nPróximo sorteio: {quando}. Gasto no mês até agora: {brl(g)}. "
+                    "Clique em 'Apostei' depois de jogar na lotérica.")
 
             def mostra():
                 self.s_cards = [(jogo, a, t) for a, t in itens]
@@ -447,6 +542,7 @@ class App(tk.Tk):
         r1 = ttk.Frame(f, style="Card.TFrame"); r1.pack(fill="x")
         ttk.Label(r1, text="Dezenas", style="Muted.TLabel").pack(side="left")
         self.bet_in = ttk.Entry(r1, width=38); self.bet_in.pack(side="left", padx=6, fill="x", expand=True)
+        ttk.Button(r1, text="Volante", style="Small.TButton", command=self.volante).pack(side="left")
         ttk.Label(r1, text="a partir do concurso", style="Muted.TLabel").pack(side="left")
         self.desde = tk.IntVar(value=last_concurso(self.jogo.get()) + 1)
         ttk.Spinbox(r1, from_=1, to=99999, textvariable=self.desde, width=7).pack(side="left", padx=6)
@@ -488,10 +584,8 @@ class App(tk.Tk):
         r1 = ttk.Frame(f, style="Card.TFrame"); r1.pack(fill="x", pady=8)
         ttk.Label(r1, text="Dezenas", style="Muted.TLabel").pack(side="left")
         self.f_nums = ttk.Entry(r1); self.f_nums.pack(side="left", fill="x", expand=True, padx=6)
-        ttk.Button(r1, text="Mais frequentes", style="Small.TButton",
-                   command=lambda: self.fill_fech("freq")).pack(side="left")
-        ttk.Button(r1, text="Do modelo", style="Small.TButton",
-                   command=lambda: self.fill_fech("modelo")).pack(side="left", padx=6)
+        # números quentes/do modelo de previsão não ajudam (testado); pouco jogados dividem menos o prêmio
+        ttk.Button(r1, text="Pouco jogados", style="Small.TButton", command=self.fill_fech).pack(side="left")
         r2 = ttk.Frame(f, style="Card.TFrame"); r2.pack(fill="x")
         self.f_k, self.f_t, self.f_m = tk.IntVar(), tk.IntVar(), tk.IntVar()
         for txt, var in [("Dezenas por cartão", self.f_k), ("Garantir", self.f_t),
@@ -1277,15 +1371,15 @@ class App(tk.Tk):
         self.f_t.set(min(f for f in faixas if f > 0))
         self.f_m.set(K)
 
-    def fill_fech(self, fonte):
-        s = self.dados
-        if not s or s["jogo"] != self.jogo.get() or s["jogo"] == "supersete":
-            messagebox.showinfo("Fechamento", "Clique em Analisar neste jogo primeiro.")
+    def fill_fech(self):
+        jogo = self.jogo.get()
+        if jogo == "supersete":
+            messagebox.showinfo("Fechamento", "O Super Sete não tem fechamento.")
             return
-        qtd = JOGOS[s["jogo"]][2] + 4
-        nums = s["pick"] if fonte == "modelo" and s.get("pick") else [d for d, _ in s["freq"].most_common(qtd)]
+        qtd = min(JOGOS[jogo][2] + 4, MAX_DEZ[jogo], JOGOS[jogo][0])
+        nums = sugestoes(jogo, 1, qtd)[0]
         self.f_nums.delete(0, "end")
-        self.f_nums.insert(0, " ".join(f"{x:02d}" for x in sorted(nums[:qtd] if fonte == "freq" else nums)))
+        self.f_nums.insert(0, " ".join(f"{x:02d}" for x in sorted(nums)))
 
     def run_fech(self):
         jogo = self.jogo.get()

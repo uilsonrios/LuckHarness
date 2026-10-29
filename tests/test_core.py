@@ -203,3 +203,20 @@ def test_sync_sem_espelho_com_concurso_faltando(monkeypatch):
     msgs = []
     assert core.sync_draws("quina", 5, log=msgs.append) == 4
     assert any("não baixaram" in m for m in msgs)
+
+
+def test_mes_ambiguo_e_texto_sobrando():
+    import pytest
+    with pytest.raises(ValueError, match="Março ou Maio"):
+        core.parse_bet("diadesorte", "1 2 3 4 5 6 7 + ma")
+    assert core.parse_bet("diadesorte", "1 2 3 4 5 6 7 + jul")[1] == ["Julho"]
+    with pytest.raises(ValueError, match="nada depois"):
+        core.parse_bet("megasena", "1 2 3 4 5 6 + 7 8")
+
+
+def test_calendario_de_sorteios():
+    from datetime import date
+    qua = date(2026, 10, 28)
+    assert core.proximo_sorteio("megasena", qua) == date(2026, 10, 29)
+    assert core.proximo_sorteio("maismilionaria", qua) == qua
+    assert "Mega-Sena" in core.texto_calendario(qua)

@@ -206,3 +206,10 @@ def test_checagem_respostas_reais_corretas(txt):
 def test_checagem_lista_sem_negacao_ainda_acusa():
     assert o.checar_resposta("Minhas dicas:\n- jogue os números quentes", "quina")
     assert o.checar_resposta("Dica:\n- **Números quentes**: jogue estes.", "quina")
+
+
+def test_frequente_nao_premia_so_o_mes_da_sorte():
+    for orc in (30, 100):
+        top = o.otimizar(orc, "frequente")[0]
+        assert not (top["jogo"] == "diadesorte" and top["p_dezenas"] < 0.5)
+        assert top["p_dezenas"] <= top["p_semana"]
