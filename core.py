@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -153,7 +153,8 @@ def _from_mirror(d):
             "trevos": d.get("trevos") or [], "time": d.get("timeCoracao"), "mes": d.get("mesSorte"),
             "estimado": d.get("valorEstimadoProximoConcurso") or 0,
             "arrecadado": d.get("valorArrecadado") or 0,
-            "premios": [[p.get("descricao", ""), p.get("valorPremio") or 0] for p in d.get("premiacoes") or []]}
+            "premios": [[p.get("descricao", ""), p.get("valorPremio") or 0] for p in d.get("premiacoes") or []],
+            "ganhadores": [p.get("ganhadores") or 0 for p in d.get("premiacoes") or []]}
 
 
 def _from_caixa(d):
@@ -163,7 +164,8 @@ def _from_caixa(d):
             "estimado": d.get("valorEstimadoProximoConcurso") or 0,
             "arrecadado": d.get("valorArrecadado") or 0,
             "premios": [[p.get("descricaoFaixa", ""), p.get("valorPremio") or 0]
-                        for p in d.get("listaRateioPremio") or []]}
+                        for p in d.get("listaRateioPremio") or []],
+            "ganhadores": [p.get("numeroDeGanhadores") or 0 for p in d.get("listaRateioPremio") or []]}
 
 
 def fetch(jogo, concurso=""):
@@ -183,7 +185,8 @@ def _row(jogo, d):
     K = JOGOS[jogo][1]
     dez = [int(x) for x in d["dezenas"]][:K]
     meta = {"data": d["data"], "trevos": [int(x) for x in d["trevos"]], "premios": d["premios"],
-            "estimado": d.get("estimado", 0), "arrecadado": d.get("arrecadado", 0)}
+            "estimado": d.get("estimado", 0), "arrecadado": d.get("arrecadado", 0),
+            "ganhadores": d.get("ganhadores") or []}
     if jogo in EXTRA:
         chave = EXTRA[jogo][0]
         meta[chave] = _extra(jogo, d.get(chave))
@@ -1077,6 +1080,9 @@ SYSTEM = ("Você é Harness IA, analista de loterias do LuckHarness. Responda em
           "não refaça cálculos, explique-os. Use os dados, o modelo de "
           "aprendizado, as apostas e a banca enviados no contexto e lembre o que já foi conversado. Seja honesto: "
           "loterias são aleatórias e nenhum modelo prevê o próximo sorteio; ajude com cobertura, custo e gestão de banca. "
+          "Quando o contexto trouxer o plano do Otimizador ou o modelo de popularidade, baseie a recomendação neles: "
+          "escolha de jogo pela chance de prêmio por real, cartões espalhados, fechamento com garantia e números "
+          "pouco populares (dividem menos o prêmio). Nunca prometa acerto nem lucro. "
           "Escreva em texto simples, sem markdown (nada de **, ##, tabelas com | ou emojis): o chat não formata. "
           "Use parágrafos curtos e listas com hífen.")
 

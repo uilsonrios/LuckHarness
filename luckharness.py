@@ -6,6 +6,7 @@ from tkinter import ttk, messagebox, scrolledtext, filedialog, simpledialog
 
 from core import *  # noqa: F401,F403
 from core import __version__, log
+from otimizador import *  # noqa: F401,F403
 
 
 # ---------------- interface ----------------
@@ -287,6 +288,7 @@ class App(tk.Tk):
         self.build_fech()
         self.build_retorno()
         self.build_plano()
+        self.build_otim()
         self.build_banca()
         self.build_chat(body)
 
@@ -426,6 +428,84 @@ class App(tk.Tk):
         self.bg(lambda: [self.log(f"Alerta: {a['jogo']} com retorno de {a['retorno']:.0%}.", "head")
                          for a in checar_alertas()])
 
+    def build_otim(self):
+        f = self.tab("Otimizador")
+        r1 = ttk.Frame(f, style="Card.TFrame"); r1.pack(fill="x")
+        ttk.Label(r1, text="R$ por semana", style="Muted.TLabel").pack(side="left")
+        self.o_val = ttk.Entry(r1, width=8); self.o_val.pack(side="left", padx=6)
+        self.o_val.insert(0, str(load_prefs().get("orcamento") or 30))
+        ttk.Label(r1, text="objetivo", style="Muted.TLabel").pack(side="left")
+        self.o_obj = ttk.Combobox(r1, values=list(OBJETIVOS.values()), state="readonly", width=38)
+        self.o_obj.set(OBJETIVOS["frequente"]); self.o_obj.pack(side="left", padx=6)
+        ttk.Button(r1, text="Otimizar", style="Accent.TButton", command=self.run_otim).pack(side="left", padx=6)
+        ttk.Button(r1, text="Salvar cartões", style="Ghost.TButton", command=self.save_otim).pack(side="left")
+        r2 = ttk.Frame(f, style="Card.TFrame"); r2.pack(fill="x", pady=8)
+        ttk.Button(r2, text="Treinar modelo de popularidade (jogo selecionado)", style="Ghost.TButton",
+                   command=self.run_pop).pack(side="left")
+        ttk.Button(r2, text="Chances de todos os jogos", style="Ghost.TButton",
+                   command=lambda: self.bg_otim(tabela_chances)).pack(side="left", padx=6)
+        self.o_out = text_box(f, font=("Consolas", 10)); self.o_out.pack(fill="both", expand=True)
+        self.o_out.insert("end", "O Otimizador escolhe o jogo e o formato de aposta que mais rendem para o seu "
+                                 "orçamento, gera cartões espalhados (menos números repetidos = mais chance de "
+                                 "pelo menos um premiar) e, com o modelo de popularidade treinado, evita os números "
+                                 "que o público mais joga para dividir menos o prêmio.\n\n"
+                                 "Ele não prevê sorteios: nenhum método faz isso. Ele tira o máximo de cada real.")
+        self.otim_cards, self.otim_txt = [], ""
+
+    def bg_otim(self, fn):
+        self.o_out.delete("1.0", "end")
+        self.o_out.insert("end", "Calculando...")
+
+        def f():
+            try:
+                t = fn()
+            except Exception as e:
+                log.exception("otimizador")
+                t = f"ERRO: {e}"
+            self.after(0, lambda: (self.o_out.delete("1.0", "end"), self.o_out.insert("end", t)))
+        threading.Thread(target=f, daemon=True).start()
+
+    def run_otim(self):
+        try:
+            orc = float(self.o_val.get().replace(",", "."))
+        except ValueError:
+            messagebox.showerror("Otimizador", "Valor por semana inválido.")
+            return
+        obj = next(k for k, v in OBJETIVOS.items() if v == self.o_obj.get())
+        save_prefs(orcamento=orc)
+
+        def f():
+            rk = otimizar(orc, obj)
+            b = rk[0]
+            cards, tv, p_esp, p_ale = comparar_cobertura(b["jogo"], b["k"], b["n"])
+            j = b["jogo"]
+            extras = tv or [extra_aleatorio(j) if j in EXTRA else [] for _ in cards]
+            self.otim_cards = [(j, c, t) for c, t in zip(cards, extras)]
+            linhas = [texto_plano(orc, obj, rk), "", f"Cartões sugeridos ({j}):"]
+            for i, (c, t) in enumerate(zip(cards, extras), 1):
+                fd = fator_divisao(j, c)
+                linhas.append(f"  {i:>2}. {fmt_bet(j, c, t)}" + (f"   divisão do prêmio: {fd:.2f}x a média"
+                                                                   if fd else ""))
+            linhas += ["", f"Chance de pelo menos um cartão premiar nas dezenas (20.000 sorteios simulados): "
+                           f"{p_esp:.1%} com estes cartões x {p_ale:.1%} com cartões ao acaso."]
+            if not pesos_popularidade(j) and j in POP_JOGOS:
+                linhas.append("Dica: treine o modelo de popularidade deste jogo para os cartões evitarem os "
+                              "números mais jogados.")
+            self.otim_txt = "\n".join(linhas)
+            return self.otim_txt
+        self.bg_otim(f)
+
+    def run_pop(self):
+        jogo = self.jogo.get()
+        self.bg_otim(lambda: texto_popularidade(treinar_popularidade(jogo)))
+
+    def save_otim(self):
+        if not self.otim_cards:
+            messagebox.showinfo("Otimizador", "Clique em 'Otimizar' primeiro.")
+            return
+        self._save_bets(self.otim_cards)
+        self.otim_cards = []
+
     def bg_ret(self, fn):
         self.r_out.delete("1.0", "end")
         self.r_out.insert("end", "Calculando...")
@@ -468,7 +548,12 @@ class App(tk.Tk):
         except ValueError as e:
             messagebox.showerror("Aposta inválida", str(e))
             return
-        self.bg_ret(lambda: avaliar_aposta(jogo, nums, trevos)[0])
+        def f():
+            txt = avaliar_aposta(jogo, nums, trevos)[0]
+            fd = fator_divisao(jogo, nums)
+            return txt + (f"\nModelo de popularidade: quem acertar esta aposta divide o prêmio com {fd:.2f}x a "
+                          "média de ganhadores." if fd else "")
+        self.bg_ret(f)
 
     def sim_bolao(self):
         jogo = self.jogo.get()
@@ -1031,6 +1116,8 @@ class App(tk.Tk):
                 avaliar_aposta(j, a, [])[0] for j, a in self.last_sugs[:6]))
         if self.ev_txt:
             partes.append(self.ev_txt)
+        if self.otim_txt:
+            partes.append("Plano do Otimizador:\n" + self.otim_txt)
         if self.ranking:
             partes.append(self.ranking)
         g, p = banca_mes(self.user)
