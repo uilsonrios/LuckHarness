@@ -10,7 +10,7 @@ import json, math, os, random
 from collections import Counter
 
 from core import (DATA, EXTRA, JOGOS, MAX_DEZ, MESES, _sorteios, brl, custo, db, historico_retorno, hypergeom, log,
-                  premio, prob_faixa, valor_esperado)
+                  premio, premios_medios, prob_faixa, valor_esperado)
 
 OBJETIVOS = {"frequente": "ganhar algum prêmio com mais frequência",
              "grande": "maior chance do prêmio principal",
@@ -25,7 +25,23 @@ def _p_trevos(t):
     return {k: math.comb(t, k) * math.comb(6 - t, 2 - k) / 15 for k in (0, 1, 2)}
 
 
-def prob_premio(jogo, n=None, trevos=2):
+def _sem_extra(jogo, k):
+    """P(nenhum de k cartões acertar o time/mês), com times/meses diferentes em cada cartão."""
+    if jogo not in EXTRA:
+        return 1.0
+    opcoes_extra = round(1 / EXTRA[jogo][2])
+    return max(0.0, 1 - min(k, opcoes_extra) / opcoes_extra)
+
+
+def prob_cartoes(jogo, p_dezenas_1, k):
+    """P(algum de k cartões espalhados premiar): dezenas quase independentes, time/mês sem repetir."""
+    p_dz = 1 - (1 - p_dezenas_1) ** k
+    if jogo == "duplasena":
+        p_dz = 1 - (1 - p_dz) ** 2
+    return 1 - (1 - p_dz) * _sem_extra(jogo, k)
+
+
+def prob_premio(jogo, n=None, trevos=2, extra=True):
     """P(ganhar alguma faixa) com uma aposta de n dezenas, contando trevos, time/mês e os dois sorteios."""
     N, K, mn, fx, _ = JOGOS[jogo]
     n = n or mn
@@ -37,10 +53,10 @@ def prob_premio(jogo, n=None, trevos=2):
         p = sum(hypergeom(N, K, n, h) * (1 if h >= 4 else pt[1] + pt[2]) for h in fx)
     else:
         p = sum(hypergeom(N, K, n, h) for h in fx)
-    if jogo in EXTRA:
-        p = 1 - (1 - p) * (1 - EXTRA[jogo][2])
     if jogo == "duplasena":
         p = 1 - (1 - p) ** 2
+    if extra and jogo in EXTRA:
+        p = 1 - (1 - p) * (1 - EXTRA[jogo][2])
     return p
 
 
@@ -88,15 +104,67 @@ def opcoes(orcamento, jogos=None):
             k = int(orcamento // c)
             if k < 1:
                 break
-            p1 = prob_premio(j, n)
-            # cartões espalhados ficam perto da independência; é a estimativa usada para comparar opções
-            ps = 1 - (1 - p1) ** k
-            out.append({"jogo": j, "n": n, "k": k, "custo": c, "gasto": k * c, "p_semana": ps,
-                        "p_principal_ano": 1 - (1 - prob_principal(j, n)) ** (k * 52), "retorno": ret})
+            pd = prob_premio(j, n, extra=False)
+            if j == "duplasena":
+                pd = 1 - (1 - pd) ** 0.5   # prob_cartoes aplica os dois sorteios
+            ps = prob_cartoes(j, pd, k)
+            out.append({"jogo": j, "tipo": "simples", "n": n, "k": k, "custo": c, "gasto": k * c, "p_semana": ps,
+                        "p_principal_ano": 1 - (1 - prob_principal(j, n)) ** (k * 52), "retorno": ret,
+                        "plano": f"{k} cartão(ões) de {n}"})
+        out += _opcoes_bolao(j, orcamento, ret) + _opcoes_fechamento(j, orcamento, ret)
     return out
 
 
-def otimizar(orcamento, objetivo="frequente", jogos=None, top=5):
+def _opcoes_bolao(j, orcamento, ret):
+    """Uma cota por semana de um bolão com mais dezenas. Divide custo e prêmio: a chance de o bolão premiar é
+    a da aposta grande inteira, mas você recebe 1/cotas de cada prêmio."""
+    if j == "supersete":
+        return []
+    mn, out = JOGOS[j][2], []
+    for n in range(mn + 1, MAX_DEZ[j] + 1):
+        c = custo(j, list(range(1, n + 1)), [1, 2] if j == "maismilionaria" else [])
+        q = max(2, math.ceil(c / orcamento))
+        if q > 100:   # limite prático de cotas
+            break
+        out.append({"jogo": j, "tipo": "bolão", "n": n, "k": 1, "cotas": q, "custo": c, "gasto": c / q,
+                    "p_semana": prob_premio(j, n), "p_principal_ano": 1 - (1 - prob_principal(j, n) / q) ** 52,
+                    "retorno": ret, "plano": f"bolão {n} dez., 1/{q} cota"})
+    return out
+
+
+def _opcoes_fechamento(j, orcamento, ret):
+    """Fechamento com garantia na faixa mais baixa: escolhe v dezenas e cobre todas as combinações de t
+    sorteadas entre elas. Só entra se o cálculo for rápido e couber no orçamento."""
+    if j in ("supersete", "lotomania", "maismilionaria"):   # +Milionária depende dos trevos
+        return []
+    N, K, mn, fx, preco = JOGOS[j]
+    t = min(h for h in fx if h > 0)
+    out = []
+    for v in range(mn + 1, min(N, mn + 6) + 1):
+        if math.comb(v, t) > 3000:
+            break
+        try:
+            from core import fechamento
+            cards = fechamento(list(range(1, v + 1)), mn, t, t)
+        except ValueError:
+            break
+        gasto = len(cards) * preco
+        if gasto > orcamento:
+            break
+        # garantia: se t das v dezenas saírem, um cartão faz t acertos; fora disso ainda pode premiar
+        p_gar = sum(hypergeom(N, K, v, h) for h in range(t, min(v, K) + 1))
+        p = simular_cobertura(j, cards, 4000, random.Random(v))
+        if j == "duplasena":
+            p = 1 - (1 - p) ** 2
+        p = 1 - (1 - p) * _sem_extra(j, len(cards))
+        out.append({"jogo": j, "tipo": "fechamento", "n": mn, "k": len(cards), "v": v, "t": t, "custo": preco,
+                    "gasto": gasto, "p_semana": p, "p_garantia": p_gar, "p_principal_ano": 1 - (1 - prob_principal(j) * len(cards)) ** 52,
+                    "retorno": ret, "cards_base": cards,
+                    "plano": f"fechamento {v} dez., {len(cards)} cart."})
+    return out
+
+
+def otimizar(orcamento, objetivo="frequente", jogos=None, top=8):
     if orcamento <= 0:
         raise ValueError("Informe quanto quer gastar por semana.")
     ops = opcoes(orcamento, jogos)
@@ -105,32 +173,51 @@ def otimizar(orcamento, objetivo="frequente", jogos=None, top=5):
     chave = {"frequente": lambda o: (o["p_semana"], -o["gasto"]),
              "grande": lambda o: (o["p_principal_ano"], o["p_semana"]),
              "retorno": lambda o: ((o["retorno"] or 0), o["p_semana"])}[objetivo]
-    melhor_por_jogo = {}
+    melhor = {}
     for o in sorted(ops, key=chave, reverse=True):
-        melhor_por_jogo.setdefault(o["jogo"], o)
-    return list(melhor_por_jogo.values())[:top]
+        melhor.setdefault((o["jogo"], o["tipo"]), o)
+    return list(melhor.values())[:top]
 
 
 def texto_plano(orcamento, objetivo, ranking):
     out = [f"=== OTIMIZADOR: {brl(orcamento)} por semana | objetivo: {OBJETIVOS[objetivo]} ===", "",
-           f"{'#':<3}{'Jogo':<15}{'Plano':<26}{'Gasto':>11}{'Prêmio na semana':>18}{'1 a cada':>11}"
+           f"{'#':<3}{'Jogo':<15}{'Plano':<28}{'Gasto':>11}{'Prêmio na semana':>18}{'1 a cada':>11}"
            f"{'Principal/ano':>15}{'Retorno':>9}"]
     for i, o in enumerate(ranking, 1):
-        plano = f"{o['k']} cartão(ões) de {o['n']}"
+        plano = o["plano"]
         semanas = 1 / o["p_semana"]
         cada = f"{semanas:.1f} sem" if semanas < 100 else f"{semanas / 52:,.0f} anos".replace(",", ".")
         ret = f"{o['retorno']:.0%}" if o["retorno"] is not None else "-"
-        out.append(f"{i:<3}{o['jogo']:<15}{plano:<26}{brl(o['gasto']):>11}{o['p_semana']:>18.1%}{cada:>11}"
+        out.append(f"{i:<3}{o['jogo']:<15}{plano:<28}{brl(o['gasto']):>11}{o['p_semana']:>18.1%}{cada:>11}"
                    f"{_um_em(o['p_principal_ano']) if o['p_principal_ano'] < .01 else format(o['p_principal_ano'], '.1%'):>15}"
                    f"{ret:>9}")
     b = ranking[0]
     anual = b["gasto"] * 52
     volta = (b["retorno"] or 0) * anual
-    out += ["", f"Recomendado: {b['jogo']}, {b['k']} cartão(ões) de {b['n']} dezenas por semana.",
+    if b["tipo"] == "bolão":
+        rec = (f"uma cota (1/{b['cotas']}) de um bolão de {b['n']} dezenas, {brl(b['gasto'])} por semana. "
+               f"Se o bolão ganhar, você recebe 1/{b['cotas']} do prêmio")
+    elif b["tipo"] == "fechamento":
+        rec = (f"fechamento de {b['v']} dezenas em {b['k']} cartões: se {b['t']} das {b['v']} saírem, um cartão "
+               f"faz {b['t']} acertos (garantido; isso acontece em {b['p_garantia']:.0%} dos concursos)")
+    else:
+        rec = f"{b['k']} cartão(ões) de {b['n']} dezenas por semana"
+    out += ["", f"Recomendado: {b['jogo']}, {rec}."]
+    if b["jogo"] in EXTRA:
+        desc = EXTRA[b["jogo"]][1]
+        try:
+            val = premios_medios(b["jogo"])[0].get(desc)
+        except Exception:
+            val = None
+        out.append(f"Atenção: boa parte da frequência vem do {desc} (cada cartão com um diferente), que paga pouco"
+                   + (f": cerca de {brl(val)}." if val else "."))
+    out += [
             f"Em um ano: gasta {brl(anual)}, a matemática devolve em média {brl(volta)} em prêmios "
             f"(saldo esperado {brl(volta - anual)}).",
             "Os cartões abaixo são espalhados (o mínimo de números repetidos entre eles) e, se houver modelo de "
             "popularidade treinado, evitam os números que o público mais joga.",
+            "Bolão: 'Principal/ano' é o equivalente à sua cota (o bolão ganha mais vezes, mas você recebe só a "
+            "sua parte).",
             "Nenhum plano aumenta a chance de cada cartão nem garante lucro: ele tira o máximo de cada real."]
     return "\n".join(out)
 
@@ -480,4 +567,237 @@ def texto_teste(r):
     out += ["", "Um teste no passado mostra o que teria acontecido, não o que vai acontecer. Variações entre os "
                 "dois planos em poucos concursos são em grande parte sorte; o que se mantém no longo prazo é o "
                 "retorno médio de cada jogo (aba Retorno)."]
+    return "\n".join(out)
+
+
+# ---------------- risco de ruína ----------------
+def _faixas_plano(plano):
+    """(prob, prêmio) por aposta simples, quantas apostas simples o plano faz por semana e a fração do prêmio
+    que é sua (bolão)."""
+    from core import _sorteia_ganho, apostas_simples
+    j = plano["jogo"]
+    ev = valor_esperado(j)
+    faixas = [(p, v) for _, p, v, _ in ev["linhas"]]
+    tv = [1, 2] if j == "maismilionaria" else []
+    n_simples = apostas_simples(j, list(range(plano["n"])), tv) * (1 if plano["tipo"] == "bolão" else plano["k"])
+    fator = 1 / plano["cotas"] if plano["tipo"] == "bolão" else 1.0
+    if j == "duplasena":
+        n_simples *= 2
+    return faixas, n_simples, fator, _sorteia_ganho
+
+
+def risco_ruina(plano, banca, anos=1, n_sim=2000, seed=3):
+    """Simula semana a semana: paga o plano, recebe os prêmios sorteados. Ruína = a banca não paga mais a
+    aposta da semana."""
+    faixas, n_simples, fator, sorteia = _faixas_plano(plano)
+    gasto, semanas = plano["gasto"], 52 * anos
+    estado = random.getstate()
+    random.seed(seed)
+    try:
+        quebras, finais = [], []
+        for _ in range(n_sim):
+            b, quebrou = banca, None
+            for s in range(1, semanas + 1):
+                if b < gasto:
+                    quebrou = s
+                    break
+                b += sorteia(faixas, n_simples) * fator - gasto
+            quebras.append(quebrou)
+            finais.append(b)
+    finally:
+        random.setstate(estado)
+    q = sorted(x for x in quebras if x)
+    finais.sort()
+    return {"banca": banca, "gasto": gasto, "semanas": semanas, "p_ruina": len(q) / n_sim,
+            "mediana_quebra": q[len(q) // 2] if q else None, "sem_premio": int(banca // gasto),
+            "final_mediana": finais[n_sim // 2], "final_p10": finais[n_sim // 10],
+            "final_p90": finais[n_sim * 9 // 10], "p_acima": sum(x > banca for x in finais) / n_sim}
+
+
+def texto_ruina(plano, r):
+    out = [f"=== RISCO DE RUÍNA: banca de {brl(r['banca'])}, {plano['jogo']} ({plano['plano']}), "
+           f"{brl(r['gasto'])} por semana, {r['semanas']} semanas ===", "",
+           f"Sem nenhum prêmio a banca duraria {r['sem_premio']} semanas.",
+           f"Chance de a banca acabar antes de {r['semanas']} semanas: {r['p_ruina']:.0%}"
+           + (f" (metade dos casos quebra até a semana {r['mediana_quebra']})" if r["mediana_quebra"] else ""),
+           f"Banca no fim: típico {brl(r['final_mediana'])} | 10% piores {brl(r['final_p10'])} ou menos | "
+           f"10% melhores {brl(r['final_p90'])} ou mais",
+           f"Chance de terminar com mais do que começou: {r['p_acima']:.1%}", "",
+           "Critério de Kelly (a fórmula clássica de quanto apostar): com retorno abaixo de 100%, a fração ideal "
+           "da banca é zero. Trate o gasto como entretenimento com limite fixo, não como investimento."]
+    return "\n".join(out)
+
+
+# ---------------- auditoria de aleatoriedade ----------------
+def _gamma_q(a, x):
+    """Função gama incompleta superior regularizada Q(a, x) (Numerical Recipes)."""
+    if x <= 0:
+        return 1.0
+    gln = math.lgamma(a)
+    if x < a + 1:
+        s = term = 1 / a
+        ap = a
+        for _ in range(1000):
+            ap += 1
+            term *= x / ap
+            s += term
+            if abs(term) < abs(s) * 1e-12:
+                break
+        return 1 - s * math.exp(-x + a * math.log(x) - gln)
+    b, c, d = x + 1 - a, 1e300, 1 / (x + 1 - a)
+    h = d
+    for i in range(1, 1000):
+        an = -i * (i - a)
+        b += 2
+        d = an * d + b
+        d = 1e-300 if abs(d) < 1e-300 else d
+        c = b + an / c
+        c = 1e-300 if abs(c) < 1e-300 else c
+        d = 1 / d
+        h *= d * c
+        if abs(d * c - 1) < 1e-12:
+            break
+    return math.exp(-x + a * math.log(x) - gln) * h
+
+
+def qui_quadrado(obs, esp):
+    """Estatística, valor-p e graus de liberdade do qui-quadrado (classes com esperado < 5 são agrupadas)."""
+    o2, e2, ao, ae = [], [], 0.0, 0.0
+    for o_, e_ in zip(obs, esp):
+        ao, ae = ao + o_, ae + e_
+        if ae >= 5:
+            o2.append(ao)
+            e2.append(ae)
+            ao = ae = 0.0
+    if ae and e2:
+        o2[-1] += ao
+        e2[-1] += ae
+    if len(e2) < 2:
+        return 0.0, 1.0, 0
+    x2 = sum((a - b) ** 2 / b for a, b in zip(o2, e2))
+    gl = len(e2) - 1
+    return x2, _gamma_q(gl / 2, x2 / 2), gl
+
+
+def auditoria(jogo):
+    """Testes clássicos de aleatoriedade nos sorteios reais, com correção de Holm para vários testes."""
+    from core import load_draws
+    N, K = JOGOS[jogo][:2]
+    draws = [d for _, d in sorted(load_draws(jogo, 100000))]
+    T = len(draws)
+    if T < 100:
+        raise ValueError(f"{jogo}: baixe os resultados primeiro (há {T} concursos).")
+    testes = []
+    if jogo == "supersete":
+        for col in range(7):
+            obs = [sum(d[col] == x for d in draws) for x in range(10)]
+            testes.append((f"coluna {col + 1}: cada dígito sai igual", *qui_quadrado(obs, [T / 10] * 10)))
+    else:
+        obs = [sum(x in d for d in draws) for x in range(1, N + 1)]
+        testes.append(("frequência de cada dezena", *qui_quadrado(obs, [T * K / N] * N)))
+        pares = [sum(1 for x in d if x % 2 == 0) for d in draws]
+        esp = [T * hypergeom(N, N // 2, K, h) for h in range(K + 1)]
+        testes.append(("quantidade de pares por sorteio", *qui_quadrado([pares.count(h) for h in range(K + 1)], esp)))
+        rep = [len(set(a) & set(b)) for a, b in zip(draws, draws[1:])]
+        esp = [(T - 1) * hypergeom(N, K, K, h) for h in range(K + 1)]
+        testes.append(("dezenas repetidas do concurso anterior",
+                       *qui_quadrado([rep.count(h) for h in range(K + 1)], esp)))
+        gaps, ultimo = [], {}
+        for t, d in enumerate(draws):
+            for x in d:
+                if x in ultimo:
+                    gaps.append(t - ultimo[x])
+                ultimo[x] = t
+        p = K / N
+        mx = 4 * round(1 / p) + 1
+        obs = [sum(1 for g in gaps if g == i) for i in range(1, mx)] + [sum(1 for g in gaps if g >= mx)]
+        esp = [len(gaps) * p * (1 - p) ** (i - 1) for i in range(1, mx)] + [len(gaps) * (1 - p) ** (mx - 1)]
+        testes.append(("intervalo entre aparições (atraso)", *qui_quadrado(obs, esp)))
+        somas = [sum(d) for d in draws]
+        media, var = K * (N + 1) / 2, K * (N - K) * (N + 1) / 12
+        z = (sum(somas) / T - media) / math.sqrt(var / T)
+        testes.append(("soma média das dezenas", z * z, math.erfc(abs(z) / math.sqrt(2)), 1))
+    ordem = sorted(range(len(testes)), key=lambda i: testes[i][2])
+    m, ajust, maior = len(testes), [0.0] * len(testes), 0.0
+    for r, i in enumerate(ordem):   # correção de Holm
+        maior = max(maior, min(1.0, (m - r) * testes[i][2]))
+        ajust[i] = maior
+    return {"jogo": jogo, "concursos": T, "testes": [(*t, a) for t, a in zip(testes, ajust)]}
+
+
+def texto_auditoria(r):
+    out = [f"=== AUDITORIA DE ALEATORIEDADE: {r['jogo'].upper()} ({r['concursos']} concursos) ===",
+           "Cada teste pergunta: os sorteios reais se comportam como sorteios perfeitamente aleatórios?", "",
+           f"{'Teste':<44}{'valor-p':>10}{'ajustado':>10}  Resultado"]
+    desvios = 0
+    for nome, _, p, _, pa in r["testes"]:
+        ok = pa >= 0.05
+        desvios += not ok
+        out.append(f"{nome:<44}{p:>10.3f}{pa:>10.3f}  {'normal' if ok else 'DESVIO'}")
+    out += ["", ("CONCLUSÃO: nenhum desvio. Os sorteios se comportam como aleatórios; nenhum padrão de "
+                 "frequência, atraso, paridade ou repetição pode ser explorado." if not desvios else
+                 f"CONCLUSÃO: {desvios} teste(s) com desvio estatístico. Pode vir de mudanças de regra ou de "
+                 "volante ao longo dos anos; desvio estatístico não é o mesmo que previsão útil (veja o teste "
+                 "no passado)."),
+            "valor-p ajustado (Holm) corrige o fato de fazermos vários testes: abaixo de 0,05 indica desvio."]
+    return "\n".join(out)
+
+
+# ---------------- previsão do acumulado ----------------
+def previsao_acumulado(jogo):
+    """Chance de o prêmio principal acumular no próximo concurso e o retorno se acumular."""
+    from core import IR, IR_ISENTO
+    preco = JOGOS[jogo][4]
+    rows = db().execute("SELECT meta FROM draws WHERE jogo=? AND meta IS NOT NULL ORDER BY concurso DESC LIMIT 300",
+                        (jogo,)).fetchall()
+    metas = [json.loads(r[0]) for r in rows][::-1]
+    if len(metas) < 20:
+        raise ValueError(f"{jogo}: baixe os resultados primeiro.")
+    base = valor_esperado(jogo)
+    tops = [p for d, p, _, _ in base["linhas"] if "estimado" in d]
+    if not tops or not base["estimado"]:
+        return None
+    p_top = tops[0]
+    resto = sum(c for d, _, _, c in base["linhas"] if "estimado" not in d)
+    # quanto o prêmio estimado cresce quando ninguém ganha a faixa principal
+    saltos = [b["estimado"] - a["estimado"] for a, b in zip(metas, metas[1:])
+              if a.get("estimado") and b.get("estimado") and (b.get("ganhadores") or [1])[0] == 0
+              and b["estimado"] > a["estimado"]]
+    if not saltos:
+        return None
+    J = base["estimado"]
+    J2 = J + sorted(saltos)[len(saltos) // 2]
+    apostas = base["apostas"] or 1
+    p_acumula = math.exp(-apostas * p_top)
+    lam = apostas * (J2 / J) ** 0.5 * p_top   # vendas sobem com o prêmio (aproximação)
+    val = J2 * (1 - math.exp(-lam)) / lam
+    if val > IR_ISENTO:
+        val *= 1 - IR
+    ev2 = (resto + p_top * val) * (2 if jogo == "duplasena" else 1)
+    return {"jogo": jogo, "estimado": J, "p_acumula": p_acumula, "proximo": J2, "retorno_atual": base["retorno"],
+            "retorno_se_acumular": ev2 / preco}
+
+
+def previsoes():
+    out = []
+    for j in JOGOS:
+        try:
+            p = previsao_acumulado(j)
+        except Exception:
+            log.warning("previsão %s", j, exc_info=True)
+            p = None
+        if p:
+            out.append(p)
+    return sorted(out, key=lambda p: -p["retorno_se_acumular"])
+
+
+def texto_previsao(prev):
+    out = ["=== PREVISÃO DO ACUMULADO (próximo concurso) ===", "",
+           f"{'Jogo':<16}{'Prêmio agora':>18}{'Chance de acumular':>20}{'Se acumular':>18}{'Retorno agora':>15}"
+           f"{'Retorno depois':>16}"]
+    for p in prev:
+        out.append(f"{p['jogo']:<16}{brl(p['estimado']):>18}{p['p_acumula']:>20.0%}{brl(p['proximo']):>18}"
+                   f"{p['retorno_atual']:>15.0%}{p['retorno_se_acumular']:>16.0%}")
+    out += ["", "Se acumular, o prêmio cresce o salto típico dos últimos 300 concursos e as vendas sobem junto, "
+                "o que divide mais o prêmio. É uma estimativa: o valor oficial sai depois do sorteio."]
     return "\n".join(out)

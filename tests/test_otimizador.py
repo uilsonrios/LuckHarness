@@ -24,7 +24,14 @@ def test_otimizar_respeita_orcamento():
     assert rk[0]["jogo"] == "lotofacil"
     assert rk == sorted(rk, key=lambda r: r["p_semana"], reverse=True)
     with pytest.raises(ValueError):
-        o.otimizar(1, "frequente", jogos=["megasena"])
+        o.otimizar(1, "frequente", jogos=["supersete"])
+    tipos = {r["tipo"] for r in o.opcoes(30, ["lotofacil", "diadesorte"])}
+    assert tipos == {"simples", "bolão", "fechamento"}
+
+
+def test_meses_diferentes_garantem_mes_da_sorte():
+    assert o.prob_cartoes("diadesorte", 0.01, 12) == pytest.approx(1)
+    assert o.prob_cartoes("diadesorte", 0.0, 6) == pytest.approx(0.5)
 
 
 def test_cartoes_espalhados_usam_numeros_por_igual():

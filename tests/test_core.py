@@ -156,3 +156,21 @@ def test_fechamento_otimizado_mantem_garantia_e_reduz():
     assert len(cards) < 20   # guloso dá 20; a busca local chega a 16
     for alvo in combinations(nums, m):
         assert any(len(set(alvo) & set(c)) >= t for c in cards)
+
+
+def test_editar_trevos_ajusta_banca():
+    bid = core.save_bet("hugo", "maismilionaria", [1, 2, 3, 4, 5, 6], [1, 2], 1)
+    core.add_banca("hugo", "Gasto", 6.0, f"Aposta #{bid} maismilionaria")
+    core.editar_extra("hugo", bid, "1 2 3")
+    assert core.banca_mes("hugo")[0] == 18.0
+
+
+def test_checar_update(monkeypatch):
+    monkeypatch.setattr(core, "_get", lambda url, t=15: {"tag_name": "v99.0.0", "html_url": "u", "body": "x"})
+    assert core.checar_update()["versao"] == "99.0.0"
+    monkeypatch.setattr(core, "_get", lambda url, t=15: {"tag_name": "v0.1.0"})
+    assert core.checar_update() is None
+    def falha(*a):
+        raise OSError
+    monkeypatch.setattr(core, "_get", falha)
+    assert core.checar_update() is None

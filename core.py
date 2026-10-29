@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -1004,7 +1004,31 @@ def editar_extra(user, bid, txt):
         raise ValueError("Informe o valor depois do '+'.")
     with db() as c:
         c.execute("UPDATE bets SET trevos=? WHERE id=? AND user=?", (json.dumps(tv), bid, user))
+        # mais trevos na +Milionária mudam o custo: o gasto lançado na banca acompanha
+        c.execute("UPDATE banca SET valor=? WHERE user=? AND tipo='Gasto' AND descr=?",
+                  (custo(jogo, dz, tv), user, f"Aposta #{bid} {jogo}"))
     return jogo, tv
+
+
+REPO = "uilsonrios/LuckHarness"
+
+
+def _versao(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+
+
+def checar_update():
+    """Última versão publicada nos Releases do GitHub, se for mais nova que esta. None se não houver ou sem rede."""
+    try:
+        r = _get(f"https://api.github.com/repos/{REPO}/releases/latest", 5)
+    except Exception:
+        log.info("sem acesso aos releases", exc_info=True)
+        return None
+    tag = r.get("tag_name") or ""
+    if _versao(tag) > _versao(__version__):
+        return {"versao": tag.lstrip("v"), "url": r.get("html_url") or f"https://github.com/{REPO}/releases/latest",
+                "notas": (r.get("body") or "").strip()}
+    return None
 
 
 def backup_db(path):

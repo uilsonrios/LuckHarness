@@ -1,5 +1,5 @@
 """luckHarness - análise estatística de loterias com login e IA local (Ollama)."""
-import csv, math, os, sys, threading
+import csv, math, os, queue, sys, threading, webbrowser
 from datetime import date
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, filedialog, simpledialog
@@ -239,6 +239,8 @@ QUICK = [
 class App(tk.Tk):
     def __init__(self, user):
         super().__init__()
+        self._fila = queue.Queue()
+        self._drenar()
         theme(self)
         self.user = user
         self.title(f"LuckHarness {__version__}")
@@ -294,6 +296,38 @@ class App(tk.Tk):
 
         self.refresh_banca()
         self.bg(self.auto_update)
+        self.bg(self.ver_update)
+
+    def ver_update(self):
+        u = checar_update()
+        if not u:
+            return
+        self.log(f"Nova versão {u['versao']} disponível: {u['url']}", "head")
+
+        def perguntar():
+            if messagebox.askyesno("Atualização", f"A versão {u['versao']} do LuckHarness está disponível "
+                                                  f"(você tem a {__version__}).\n\nAbrir a página de download?"):
+                webbrowser.open(u["url"])
+        self.after(0, perguntar)
+
+    def after(self, ms, func=None, *args):
+        """Threads em background não podem mexer no Tk: o que vier delas entra numa fila que a thread
+        principal executa (evita 'main thread is not in main loop')."""
+        if threading.current_thread() is threading.main_thread():
+            return super().after(ms, func, *args)
+        self._fila.put(lambda: func(*args))
+
+    def _drenar(self):
+        while True:
+            try:
+                fn = self._fila.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                fn()
+            except Exception:
+                log.exception("atualização da tela")
+        super().after(50, self._drenar)
 
     # ---------- abas ----------
     def tab(self, title):
@@ -454,6 +488,15 @@ class App(tk.Tk):
         ttk.Label(r3, text="%", style="Muted.TLabel").pack(side="left")
         ttk.Button(r3, text="Testar no passado", style="Ghost.TButton", command=self.run_teste).pack(side="left",
                                                                                                    padx=6)
+        r4 = ttk.Frame(f, style="Card.TFrame"); r4.pack(fill="x", pady=(0, 8))
+        ttk.Label(r4, text="Banca R$", style="Muted.TLabel").pack(side="left")
+        self.o_banca = ttk.Entry(r4, width=8); self.o_banca.pack(side="left", padx=6)
+        self.o_banca.insert(0, "500")
+        ttk.Button(r4, text="Risco de ruína do plano", style="Ghost.TButton", command=self.run_ruina).pack(side="left")
+        ttk.Button(r4, text="Auditoria de aleatoriedade (jogo)", style="Ghost.TButton",
+                   command=self.run_auditoria).pack(side="left", padx=6)
+        ttk.Button(r4, text="Previsão do acumulado", style="Ghost.TButton",
+                   command=lambda: self.bg_otim(lambda: texto_previsao(previsoes()))).pack(side="left")
         self.o_out = text_box(f, font=("Consolas", 10)); self.o_out.pack(fill="both", expand=True)
         self.o_out.insert("end", "O Otimizador escolhe o jogo e o formato de aposta que mais rendem para o seu "
                                  "orçamento, gera cartões espalhados (menos números repetidos = mais chance de "
@@ -488,8 +531,16 @@ class App(tk.Tk):
             rk = otimizar(orc, obj)
             b = rk[0]
             self.otim_plan = b
-            cards, tv, p_esp, p_ale = comparar_cobertura(b["jogo"], b["k"], b["n"])
             j = b["jogo"]
+            if b["tipo"] == "simples":
+                cards, tv, p_esp, p_ale = comparar_cobertura(j, b["k"], b["n"])
+            else:
+                # dezenas do bolão/fechamento: as menos repetidas e menos populares
+                v = b.get("v", b["n"])
+                base = cartoes_espalhados(j, 1, v, pesos_popularidade(j))[0]
+                cards = ([base] if b["tipo"] == "bolão" else
+                         [sorted(base[x - 1] for x in c) for c in b["cards_base"]])
+                tv, p_esp, p_ale = None, None, None
             extras = tv or extras_espalhados(j, len(cards))
             self.otim_cards = [(j, c, t) for c, t in zip(cards, extras)]
             linhas = [texto_plano(orc, obj, rk), "", f"Cartões sugeridos ({j}):"]
@@ -497,8 +548,12 @@ class App(tk.Tk):
                 fd = fator_divisao(j, c)
                 linhas.append(f"  {i:>2}. {fmt_bet(j, c, t)}" + (f"   divisão do prêmio: {fd:.2f}x a média"
                                                                    if fd else ""))
-            linhas += ["", f"Chance de pelo menos um cartão premiar nas dezenas (20.000 sorteios simulados): "
-                           f"{p_esp:.1%} com estes cartões x {p_ale:.1%} com cartões ao acaso."]
+            if p_esp is not None:
+                linhas += ["", f"Chance de pelo menos um cartão premiar nas dezenas (20.000 sorteios simulados): "
+                               f"{p_esp:.1%} com estes cartões x {p_ale:.1%} com cartões ao acaso."]
+            if b["tipo"] == "bolão":
+                linhas += ["", f"Bolão: registre o jogo de {b['n']} dezenas com {b['cotas']} cotas numa lotérica; "
+                               "'Salvar cartões' lança só o valor da sua cota na banca."]
             if not pesos_popularidade(j) and j in POP_JOGOS:
                 linhas.append("Dica: treine o modelo de popularidade deste jogo para os cartões evitarem os "
                               "números mais jogados.")
@@ -514,6 +569,22 @@ class App(tk.Tk):
         self.bg_otim(lambda: ("" if b else f"(Sem plano do Otimizador: testando {k} cartões de {jogo}.)\n\n")
                      + texto_teste(testar_no_passado(jogo, k, n, conc, rmin)))
 
+    def run_ruina(self):
+        if not self.otim_plan:
+            messagebox.showinfo("Risco de ruína", "Clique em 'Otimizar' primeiro: o risco é calculado para o plano.")
+            return
+        try:
+            banca = float(self.o_banca.get().replace(",", "."))
+        except ValueError:
+            messagebox.showerror("Risco de ruína", "Banca inválida.")
+            return
+        plano = self.otim_plan
+        self.bg_otim(lambda: texto_ruina(plano, risco_ruina(plano, banca)))
+
+    def run_auditoria(self):
+        jogo = self.jogo.get()
+        self.bg_otim(lambda: texto_auditoria(auditoria(jogo)))
+
     def run_pop(self):
         jogo = self.jogo.get()
         self.bg_otim(lambda: texto_popularidade(treinar_popularidade(jogo)))
@@ -521,6 +592,17 @@ class App(tk.Tk):
     def save_otim(self):
         if not self.otim_cards:
             messagebox.showinfo("Otimizador", "Clique em 'Otimizar' primeiro.")
+            return
+        b = self.otim_plan
+        if b and b["tipo"] == "bolão":
+            j, c, t = self.otim_cards[0]
+            bid = save_bet(self.user, j, c, t, last_concurso(j) + 1)
+            if self.lanca.get():
+                add_banca(self.user, "Gasto", b["gasto"], f"Cota bolão (aposta #{bid}) {j}")
+            self.log(f"Bolão salvo (aposta #{bid}); sua cota: {brl(b['gasto'])}.", "head")
+            self.refresh_bets()
+            self.refresh_banca()
+            self.otim_cards = []
             return
         self._save_bets(self.otim_cards)
         self.otim_cards = []
@@ -753,6 +835,12 @@ class App(tk.Tk):
         self.after(0, lambda: self.desde.set(last_concurso(self.jogo.get()) + 1))
         self.refresh_bets(avisar=True)
         treinar_todos(lambda t: self.log(t, "head"))
+        lim = (load_prefs().get("alerta_limite") or 0) / 100
+        if lim:
+            for p in previsoes():
+                if p["retorno_se_acumular"] >= lim > p["retorno_atual"]:
+                    self.log(f"Previsão: {p['jogo']} pode passar de {lim:.0%} de retorno se acumular "
+                             f"({p['p_acumula']:.0%} de chance).", "head")
         for a in checar_alertas():
             self.log(f"Alerta: {a['jogo']} com retorno de {a['retorno']:.0%} (prêmio {brl(a['estimado'])}).", "head")
 
