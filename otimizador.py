@@ -581,6 +581,8 @@ def _saida(mod, x):
 
 def _ajusta(jogo, treino, cfg, val=None):
     """Treina um modelo com a configuração cfg. Com val, escolhe a regularização pela nota na validação."""
+    if cfg.get("janela"):
+        treino = treino[-cfg["janela"]:]
     alvo = "y_" + cfg["alvo"]
     xs, norm, D = _entradas(jogo, treino, cfg)
     ys, ws = [a[alvo] for a in treino], _pesos_amostra(treino, cfg)
@@ -609,9 +611,13 @@ def _prever(jogo, mod, a):
     return _prever_lote(jogo, mod, [a])[0]
 
 
-CONFIGS = [{"nome": f"{m}|{al}|{'padrões' if p else 'números'}|{'recentes' if mv else 'todos'}",
-            "modelo": m, "alvo": al, "padroes": p, "meia_vida": mv}
-           for m in ("ridge",) for al in ("baixa", "multi") for p in (False, True) for mv in (0, 500)]
+# janela: treinar só com os últimos N concursos (o gosto do público muda; na curva de aprendizado ~500-1000
+# concursos recentes renderam mais que o histórico inteiro em vários jogos)
+CONFIGS = [{"nome": f"{m}|{al}|{'padrões' if p else 'números'}|{'recentes' if mv else 'todos'}"
+                    + (f"|últimos {jn}" if jn else ""),
+            "modelo": m, "alvo": al, "padroes": p, "meia_vida": mv, "janela": jn}
+           for m in ("ridge",) for al in ("baixa", "multi") for p in (False, True) for mv in (0, 500)
+           for jn in (0, 1000)]
 
 
 def treinar_popularidade(jogo, teste=0.2, rapido=False):
