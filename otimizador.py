@@ -1218,8 +1218,12 @@ _ALERTAS = [
 ]
 
 
-_NEGA = (r"\bn[ãa]o\b|\bnenhum|\bnem\b|\bnunca\b|sem efeito|igual ao acaso|\bmito\b|"
+_NEGA = (r"\bn[ãa]o\b|\bnenhum|\bnem\b|\bnunca\b|sem efeito|igual ao acaso|\bmito\b|imposs[íi]vel|ningu[ée]m|"
          r"\bmesmo (usando|jogando|com)\b|independente|aleat[óo]ri|\btest(ou|ado|e)\b|\bevite\b|em vez de")
+# contextos em que o alerta não se aplica: prever a POPULARIDADE (o que o público joga) é legítimo, e a
+# garantia de fechamento é verdadeira quando dita como condicional
+_ALERTA_OK = {0: r"popular|p[úu]blico|(mais|menos|muito|pouco) jogad",
+              3: r"condicional|fechamento|se .{0,40}\bsa[íi]rem\b"}
 
 
 def checar_resposta(texto, jogo, permitidos=()):
@@ -1229,8 +1233,8 @@ def checar_resposta(texto, jogo, permitidos=()):
     for frase in re.split(r"(?<=[.!?;:])\s+|\n+", texto.lower()):
         if re.search(_NEGA, frase):
             continue
-        for padrao, msg in _ALERTAS:
-            if re.search(padrao, frase):
+        for i, (padrao, msg) in enumerate(_ALERTAS):
+            if re.search(padrao, frase) and not (i in _ALERTA_OK and re.search(_ALERTA_OK[i], frase)):
                 avisos.append(msg)
     # sequências de números que parecem uma aposta e não vieram do app
     N, _, mn = JOGOS[jogo][:3]

@@ -175,3 +175,18 @@ def test_cobertura_duplasena_conta_os_dois_sorteios():
     p1 = o.prob_premio("duplasena", 6, extra=False)
     sim = o.simular_cobertura("duplasena", [[1, 2, 3, 4, 5, 6]], 40000, rd.Random(3))
     assert sim == pytest.approx(p1, rel=0.1)
+
+
+@pytest.mark.parametrize("txt", [
+    "O modelo de popularidade consegue prever com 63% de acerto se a combinação de números é muito jogada.",
+    "O app usa o modelo para prever quais números o público mais joga.",
+    "É impossível prever os números sorteados.",
+    "Ninguém consegue prever o resultado.",
+    "Fechamentos oferecem garantia de prêmio se 4 dos seus números saírem."])
+def test_checagem_sem_alarme_falso(txt):
+    assert o.checar_resposta(txt, "megasena") == []
+
+
+def test_checagem_ainda_pega_previsao_e_garantia():
+    assert o.checar_resposta("Use o modelo para prever o próximo resultado.", "megasena")
+    assert o.checar_resposta("Este método dá garantia de lucro.", "megasena")
