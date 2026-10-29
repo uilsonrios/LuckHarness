@@ -972,11 +972,9 @@ class App(tk.Tk):
         def f():
             self._analysis(*p)
             jogo, s = self.dados["jogo"], self.dados
-            self.log("\nApostas sugeridas (mistura quentes/atrasadas, filtro soma/paridade):", "head")
-            if jogo == "supersete":
-                sugs = suggest_ss(s["cols"])
-            else:
-                sugs = suggest(jogo, p[2], s["freq"], s["atraso"], s["soma"])
+            self.log("\nApostas sugeridas (as mesmas do Otimizador: cartões espalhados e, com o modelo de "
+                     "popularidade, números pouco jogados):", "head")
+            sugs = sugestoes(jogo, 5, p[2] if jogo != "supersete" else None)
             self.last_sugs = [(jogo, a) for a in sugs]
             for a in sugs:
                 self.log("  " + fmt_bet(jogo, a, []) + f"   (popularidade {popularidade(jogo, a)[0]}/100)")
@@ -986,9 +984,9 @@ class App(tk.Tk):
             self.log(f"Cada aposta: custo {brl(c)}, valor esperado {brl(ev['ev'] * c / ev['preco'])}, "
                      f"retorno {ev['retorno']:.0%}. Detalhes na aba Retorno.")
             if s.get("pick"):
-                self.log("Aposta do modelo de aprendizado (maiores probabilidades estimadas):", "head")
+                self.log("Só demonstração (não entra nas sugeridas): o que o modelo de previsão escolheria. "
+                         "Veja o teste acima: ele não acerta mais que o acaso.", "head")
                 self.log("  " + fmt_bet(jogo, s["pick"], []))
-                self.last_sugs.append((jogo, s["pick"]))
             self.log("Use 'Salvar sugeridas' na aba Minhas apostas para acompanhar estas apostas."
                      + (" Trevos/time/mês são sorteados ao salvar (dá para trocar em 'Editar')."
                         if jogo in EXTRA or jogo == "maismilionaria" else ""))
@@ -1305,7 +1303,7 @@ class App(tk.Tk):
             self.chat.delete("1.0", "end")
 
     def context(self):
-        partes = [f"Jogo selecionado: {self.jogo.get()}", self.last_report or "(nenhuma análise ainda)"]
+        partes = [fatos_app(self.jogo.get()), self.last_report or "(nenhuma análise ainda)"]
         if self.bets:
             partes.append("Apostas salvas:\n" + "\n".join(
                 f"  #{b['id']} {b['jogo']} {fmt_bet(b['jogo'], b['dezenas'], b['trevos'])} | conferida em "
@@ -1331,12 +1329,20 @@ class App(tk.Tk):
         self.chat.insert("end", "\nHarness IA\n", "ia")
         self.chat.see("end")
         msgs = load_chat(self.user, 6) + [{"role": "user", "content": f"{q}\n\nContexto:\n{self.context()}"}]
+        jogo = self.jogo.get()
+        permitidos = ([a for _, a in self.last_sugs] + [c for _, c, _ in self.otim_cards]
+                      + [b["dezenas"] for b in self.bets])
         save_chat(self.user, "user", q)
         cb = lambda t: self.after(0, lambda: (self.chat.insert("end", t), self.chat.see("end")))
 
         def f():
             try:
-                save_chat(self.user, "assistant", ask_ollama(self.model, msgs, cb))
+                resp = ask_ollama(self.model, msgs, cb)
+                save_chat(self.user, "assistant", resp)
+                avisos = checar_resposta(resp, jogo, permitidos)
+                if avisos:
+                    cb("\n\n[Aviso do LuckHarness: a resposta acima contradiz o que o app testou]\n"
+                       + "\n".join(f"- A IA {a}" for a in avisos))
             except Exception as e:
                 cb(f"[falha Ollama: {e}. Abra o Ollama e rode 'ollama pull {self.model}']")
             cb("\n")

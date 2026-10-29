@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.10.0"
+__version__ = "1.11.0"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -387,31 +387,6 @@ def learn(jogo, draws, n_bet, teste=100, epocas=3, lr=0.05):
            "  -> " + ("|z| < 2: o modelo NÃO supera o acaso (o esperado em sorteio aleatório)." if abs(zs) < 2 else
                       "|z| >= 2: diferença aparente; pode ser sorte, confirme com mais concursos.")]
     return "\n".join(out), sorted(sorted(prox, key=prox.get, reverse=True)[:n_bet])
-
-
-def suggest(jogo, n_bet, freq, atraso, soma_stats, qtd=5):
-    """Gera apostas mistas (quentes/atrasadas/aleatórias) filtradas por soma e paridade típicas."""
-    N, K = JOGOS[jogo][:2]
-    m, sd = soma_stats
-    peso = {i: 1 + freq.get(i, 0) * 0.5 + atraso.get(i, 0) * 0.3 for i in range(1, N + 1)}
-    apostas = []
-    for _ in range(5000):
-        if len(apostas) >= qtd:
-            break
-        pool, w, pick = list(peso), list(peso.values()), set()
-        while len(pick) < n_bet:
-            pick.add(random.choices(pool, w)[0])
-        s = sorted(pick)
-        if m is not None and n_bet == K and abs(sum(s) - m) > sd:
-            continue
-        pares = sum(1 for x in s if x % 2 == 0)
-        if abs(pares - n_bet / 2) > n_bet * 0.2:
-            continue
-        if popularidade(jogo, s)[0] >= 25:
-            continue
-        if s not in apostas:
-            apostas.append(s)
-    return apostas
 
 
 def suggest_ss(cols, qtd=5):
@@ -1187,6 +1162,8 @@ SYSTEM = ("Você é Harness IA, analista de loterias do LuckHarness. Responda em
           "não refaça cálculos, explique-os. Use os dados, o modelo de "
           "aprendizado, as apostas e a banca enviados no contexto e lembre o que já foi conversado. Seja honesto: "
           "loterias são aleatórias e nenhum modelo prevê o próximo sorteio; ajude com cobertura, custo e gestão de banca. "
+          "O bloco FATOS DO APP é a fonte de verdade: nunca o contrarie, nunca recomende números quentes, frios ou "
+          "atrasados e nunca invente números de aposta; indique só as apostas que o app gerou. "
           "Quando o contexto trouxer o plano do Otimizador ou o modelo de popularidade, baseie a recomendação neles: "
           "escolha de jogo pela chance de prêmio por real, cartões espalhados, fechamento com garantia e números "
           "pouco populares (dividem menos o prêmio). Nunca prometa acerto nem lucro. "
@@ -1196,7 +1173,8 @@ SYSTEM = ("Você é Harness IA, analista de loterias do LuckHarness. Responda em
 
 def ask_ollama(model, messages, on_chunk):
     # think=False: sem isso modelos de raciocínio passam minutos "pensando" antes de escrever a resposta
-    body = json.dumps({"model": model, "stream": True, "think": False,
+    # temperatura baixa: respostas consistentes, menos "criatividade" com números
+    body = json.dumps({"model": model, "stream": True, "think": False, "options": {"temperature": 0.2},
                        "messages": [{"role": "system", "content": SYSTEM}] + messages}).encode()
     req = urllib.request.Request(OLLAMA_URL + "/api/chat", body, {"Content-Type": "application/json"})
     full = []

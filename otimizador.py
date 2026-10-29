@@ -1123,3 +1123,85 @@ def texto_previsao(prev):
     out += ["", "Se acumular, o prêmio cresce o salto típico dos últimos 300 concursos e as vendas sobem junto, "
                 "o que divide mais o prêmio. É uma estimativa: o valor oficial sai depois do sorteio."]
     return "\n".join(out)
+
+
+# ---------------- uma fonte só para sugestões e para a IA ----------------
+def sugestoes(jogo, qtd=5, n=None, rng=None):
+    """Única fonte de apostas sugeridas do app (aba Análise, Otimizador e IA): cartões espalhados e, com modelo
+    de popularidade confiável, com os números menos jogados. Nenhum número 'quente' ou 'atrasado': o
+    Laboratório mostrou que isso não acerta mais que o acaso."""
+    return cartoes_espalhados(jogo, qtd, n, pesos_popularidade(jogo), rng or random)
+
+
+TESTADO_NAO_FUNCIONA = (
+    "Testado com os resultados reais e SEM efeito (igual ao acaso): números quentes, frios/atrasados, repetir o "
+    "último resultado, rede neural de previsão, 'aprender com erros e acertos' e treino por tentativa e erro "
+    "(mais de 5.000 concursos, testes cegos com impressão digital). Nenhum método prevê os números sorteados.")
+TESTADO_FUNCIONA = (
+    "Testado e COM efeito: escolher o jogo pela chance de prêmio por real; cartões espalhados (mais concursos "
+    "com prêmio pelo mesmo gasto); time/mês/trevos sem repetir entre cartões; números pouco jogados pelo público "
+    "(não mudam a chance, mas dividem menos o prêmio); fechamentos com garantia condicional.")
+
+
+def fatos_app(jogo):
+    """Bloco de fatos calculados pelo app, enviado à IA como fonte de verdade."""
+    linhas = [f"FATOS DO APP (fonte de verdade; não contrarie): jogo selecionado {jogo}."]
+    try:
+        linhas.append(f"- Chance de algum prêmio numa aposta simples: {_um_em(prob_premio(jogo))}; "
+                      f"prêmio principal: {_um_em(prob_principal(jogo))}.")
+    except Exception:
+        log.warning("fatos: chances", exc_info=True)
+    try:
+        ev = valor_esperado(jogo)
+        linhas.append(f"- Retorno médio hoje: {ev['retorno']:.0%} do valor apostado (abaixo de 100% = perde em "
+                      "média).")
+    except Exception:
+        pass
+    m = _modelo(jogo)
+    if m:
+        linhas.append(f"- Modelo de popularidade: nota {m['r2_teste']:.0%} em concursos não vistos "
+                      f"({'usado' if m.get('confiavel') else 'não confiável, não usado'}).")
+    melhores = sorted(JOGOS, key=lambda j: -prob_premio(j) / JOGOS[j][4])[:3]
+    linhas += [f"- Mais fáceis de premiar por real: {', '.join(melhores)}.", "- " + TESTADO_NAO_FUNCIONA,
+               "- " + TESTADO_FUNCIONA]
+    return "\n".join(linhas)
+
+
+_ALERTAS = [
+    (r"\bprev(ê|e|er|endo|isão|isões|isto|ista)\b.{0,40}\b(n[uú]mero|dezena|resultado|sorteio)",
+     "falou em prever números/resultados: nenhum método prevê sorteios (testado no Laboratório)."),
+    (r"\b(quentes?|frios?|atrasad[oa]s?)\b",
+     "citou números quentes/frios/atrasados: o Laboratório mostrou que isso não acerta mais que o acaso."),
+    (r"est(á|ao|ão) (para|pra) sair|vai sair|deve sair|tend[eê]ncia de sair|ciclo",
+     "sugeriu que algum número 'está para sair': cada sorteio é independente do anterior."),
+    (r"\bgarant(e|ido|ida|ia de) (o |a )?(lucro|ganh|acert|pr[eê]mio)",
+     "falou em garantia de ganho: só fechamentos têm garantia, e ela é condicional (se seus números saírem)."),
+    (r"\b(lucro certo|ganhar sempre|estrat[eé]gia infal[ií]vel|segredo)\b",
+     "prometeu ganho certo: o retorno médio de todas as loterias fica abaixo de 100%."),
+]
+
+
+_NEGA = (r"\bn[ãa]o\b|\bnenhum|\bnem\b|\bnunca\b|sem efeito|igual ao acaso|\bmito\b|"
+         r"\bmesmo (usando|jogando|com)\b|independente|aleat[óo]ri|\btest(ou|ado|e)\b|\bevite\b|em vez de")
+
+
+def checar_resposta(texto, jogo, permitidos=()):
+    """Confere a resposta da IA contra o que o app testou. Devolve avisos (vazio se estiver tudo certo)."""
+    avisos = []
+    # frase a frase: "números quentes NÃO funcionam" é a resposta certa, não uma contradição
+    for frase in re.split(r"(?<=[.!?;:])\s+|\n+", texto.lower()):
+        if re.search(_NEGA, frase):
+            continue
+        for padrao, msg in _ALERTAS:
+            if re.search(padrao, frase):
+                avisos.append(msg)
+    # sequências de números que parecem uma aposta e não vieram do app
+    N, _, mn = JOGOS[jogo][:3]
+    ok = {tuple(sorted(p)) for p in permitidos}
+    for linha in texto.splitlines():
+        nums = [int(x) for x in re.findall(r"\b\d{1,2}\b", linha)]
+        nums = [x for x in nums if 1 <= x <= N]
+        if len(set(nums)) >= max(5, mn - 1) and not any(set(nums) <= set(p) or set(p) <= set(nums) for p in ok):
+            avisos.append("sugeriu números que não vieram do app: use as apostas geradas pelo Otimizador.")
+            break
+    return list(dict.fromkeys(avisos))

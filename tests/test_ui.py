@@ -70,4 +70,4 @@ def test_salvar_aposta_e_editar(app, monkeypatch):
 
 
 def test_contexto_da_ia_nao_quebra(app):
-    assert "Jogo selecionado" in app.context()
+    assert "FATOS DO APP" in app.context()
