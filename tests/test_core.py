@@ -146,3 +146,13 @@ def test_backup_restore(tmp_path):
     core.sqlite3.connect(ruim).close()
     with pytest.raises(ValueError):
         core.restore_db(str(ruim))
+
+
+def test_fechamento_otimizado_mantem_garantia_e_reduz():
+    nums, k, t, m = list(range(1, 16)), 6, 3, 4
+    info = {}
+    cards = core.fechamento(nums, k, t, m, tempo=3, info=info)
+    assert info["final"] == len(cards) <= info["guloso"]
+    assert len(cards) < 20   # guloso dá 20; a busca local chega a 16
+    for alvo in combinations(nums, m):
+        assert any(len(set(alvo) & set(c)) >= t for c in cards)

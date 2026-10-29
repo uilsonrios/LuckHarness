@@ -73,3 +73,33 @@ def test_popularidade_recusa_ruido():
     m = o.treinar_popularidade("quina")
     assert not m["confiavel"]
     assert o.pesos_popularidade("quina") is None
+
+
+def test_extras_espalhados_cobrem_todos_os_meses():
+    ex = o.extras_espalhados("diadesorte", 12, random.Random(1))
+    assert sorted(e[0] for e in ex) == sorted(core.MESES)
+    tv = o.extras_espalhados("maismilionaria", 15, random.Random(1))
+    assert len({tuple(t) for t in tv}) == 15
+
+
+def test_testar_no_passado_paga_premios_reais():
+    with core.db() as c:
+        c.execute("DELETE FROM draws WHERE jogo='diadesorte'")
+        for i in range(30):
+            meta = {"premios": [["4 acertos", 5.0], ["Mês da Sorte", 2.5]], "trevos": [],
+                    "mes": core.MESES[i % 12], "arrecadado": 1}
+            c.execute("INSERT INTO draws(jogo, concurso, dezenas, meta) VALUES(?,?,?,?)",
+                      ("diadesorte", i + 1, json.dumps([1, 2, 3, 4, 5, 6, 7]), json.dumps(meta)))
+    r = o.testar_no_passado("diadesorte", 12, 7, concursos=30)
+    esp = r["esp"]
+    assert esp["jogados"] == 30 and esp["gasto"] == 30 * 12 * 2.5
+    assert esp["com_premio"] == 30                     # 12 meses diferentes: Mês da Sorte garantido
+    assert esp["faixas"]["Mês da Sorte"] == 30
+    assert "TESTE NO PASSADO" in o.texto_teste(r)
+
+
+def test_ganho_cartao_com_mais_dezenas():
+    meta = {"premios": [["6 acertos", 0], ["5 acertos", 1000.0], ["4 acertos", 100.0]]}
+    # 7 dezenas com 5 acertos = 2 quinas + 5 quadras
+    g, _ = o._ganho_cartao("megasena", [1, 2, 3, 4, 5, 50, 51], [], [1, 2, 3, 4, 5, 60], meta)
+    assert g == 2 * 1000 + 5 * 100

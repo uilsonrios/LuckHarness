@@ -444,13 +444,23 @@ class App(tk.Tk):
                    command=self.run_pop).pack(side="left")
         ttk.Button(r2, text="Chances de todos os jogos", style="Ghost.TButton",
                    command=lambda: self.bg_otim(tabela_chances)).pack(side="left", padx=6)
+        r3 = ttk.Frame(f, style="Card.TFrame"); r3.pack(fill="x", pady=(0, 8))
+        ttk.Label(r3, text="Testar o plano nos últimos", style="Muted.TLabel").pack(side="left")
+        self.o_conc = tk.IntVar(value=104)
+        ttk.Spinbox(r3, from_=20, to=2000, increment=20, textvariable=self.o_conc, width=6).pack(side="left", padx=6)
+        ttk.Label(r3, text="concursos, jogando só com retorno acima de", style="Muted.TLabel").pack(side="left")
+        self.o_rmin = tk.IntVar(value=0)
+        ttk.Spinbox(r3, from_=0, to=200, increment=10, textvariable=self.o_rmin, width=5).pack(side="left", padx=6)
+        ttk.Label(r3, text="%", style="Muted.TLabel").pack(side="left")
+        ttk.Button(r3, text="Testar no passado", style="Ghost.TButton", command=self.run_teste).pack(side="left",
+                                                                                                   padx=6)
         self.o_out = text_box(f, font=("Consolas", 10)); self.o_out.pack(fill="both", expand=True)
         self.o_out.insert("end", "O Otimizador escolhe o jogo e o formato de aposta que mais rendem para o seu "
                                  "orçamento, gera cartões espalhados (menos números repetidos = mais chance de "
                                  "pelo menos um premiar) e, com o modelo de popularidade treinado, evita os números "
                                  "que o público mais joga para dividir menos o prêmio.\n\n"
                                  "Ele não prevê sorteios: nenhum método faz isso. Ele tira o máximo de cada real.")
-        self.otim_cards, self.otim_txt = [], ""
+        self.otim_cards, self.otim_txt, self.otim_plan = [], "", None
 
     def bg_otim(self, fn):
         self.o_out.delete("1.0", "end")
@@ -477,9 +487,10 @@ class App(tk.Tk):
         def f():
             rk = otimizar(orc, obj)
             b = rk[0]
+            self.otim_plan = b
             cards, tv, p_esp, p_ale = comparar_cobertura(b["jogo"], b["k"], b["n"])
             j = b["jogo"]
-            extras = tv or [extra_aleatorio(j) if j in EXTRA else [] for _ in cards]
+            extras = tv or extras_espalhados(j, len(cards))
             self.otim_cards = [(j, c, t) for c, t in zip(cards, extras)]
             linhas = [texto_plano(orc, obj, rk), "", f"Cartões sugeridos ({j}):"]
             for i, (c, t) in enumerate(zip(cards, extras), 1):
@@ -494,6 +505,14 @@ class App(tk.Tk):
             self.otim_txt = "\n".join(linhas)
             return self.otim_txt
         self.bg_otim(f)
+
+    def run_teste(self):
+        b = self.otim_plan
+        jogo = b["jogo"] if b else self.jogo.get()
+        k, n = (b["k"], b["n"]) if b else (5, JOGOS[jogo][2])
+        conc, rmin = self.o_conc.get(), self.o_rmin.get() / 100
+        self.bg_otim(lambda: ("" if b else f"(Sem plano do Otimizador: testando {k} cartões de {jogo}.)\n\n")
+                     + texto_teste(testar_no_passado(jogo, k, n, conc, rmin)))
 
     def run_pop(self):
         jogo = self.jogo.get()
@@ -733,6 +752,7 @@ class App(tk.Tk):
         self.log(f"Resultados atualizados: {total} concursos novos.", "head")
         self.after(0, lambda: self.desde.set(last_concurso(self.jogo.get()) + 1))
         self.refresh_bets(avisar=True)
+        treinar_todos(lambda t: self.log(t, "head"))
         for a in checar_alertas():
             self.log(f"Alerta: {a['jogo']} com retorno de {a['retorno']:.0%} (prêmio {brl(a['estimado'])}).", "head")
 
@@ -740,7 +760,7 @@ class App(tk.Tk):
         self.log("Baixando resultados...", "head")
         jogo, n = self.jogo.get(), self.n.get()
         self.bg(lambda: (sync_draws(jogo, n, self.log), self.log("Concluído.", "head"),
-                         self.refresh_bets()))
+                         self.refresh_bets(), treinar_todos(lambda t: self.log(t, "head"))))
 
     def _params(self):
         """Lê a tela na thread principal; as tarefas em background recebem só os valores."""
@@ -1013,13 +1033,16 @@ class App(tk.Tk):
 
         def f():
             try:
-                cards = fechamento(nums, k, t, m, prog)
+                info = {}
+                cards = fechamento(nums, k, t, m, prog, tempo=4, info=info)
             except Exception as e:
                 msg = f"ERRO: {e}\n"
                 self.after(0, lambda: (self.f_out.delete("1.0", "end"), self.f_out.insert("end", msg)))
                 return
             preco = JOGOS[jogo][4] * math.comb(k, JOGOS[jogo][2])
-            txt = [f"{len(cards)} cartões de {k} dezenas | custo {brl(len(cards) * preco)}",
+            eco = info["guloso"] - info["final"]
+            txt = [f"{len(cards)} cartões de {k} dezenas | custo {brl(len(cards) * preco)}"
+                   + (f"  (a otimização tirou {eco} cartão(ões): economia de {brl(eco * preco)})" if eco else ""),
                    f"Garantia: se {m} das {len(nums)} dezenas escolhidas forem sorteadas, pelo menos um cartão "
                    f"faz {t} acertos.",
                    f"Para comparar: jogar todas as combinações custaria {math.comb(len(nums), k):,} cartões.", ""]

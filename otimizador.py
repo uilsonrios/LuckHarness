@@ -7,7 +7,10 @@ menos o prêmio). O modelo de popularidade aprende com o número real de ganhado
 """
 import json, math, os, random
 
-from core import (DATA, EXTRA, JOGOS, MAX_DEZ, brl, custo, db, hypergeom, log, prob_faixa, valor_esperado)
+from collections import Counter
+
+from core import (DATA, EXTRA, JOGOS, MAX_DEZ, MESES, _sorteios, brl, custo, db, historico_retorno, hypergeom, log,
+                  premio, prob_faixa, valor_esperado)
 
 OBJETIVOS = {"frequente": "ganhar algum prêmio com mais frequência",
              "grande": "maior chance do prêmio principal",
@@ -133,6 +136,28 @@ def texto_plano(orcamento, objetivo, ranking):
 
 
 # ---------------- cartões espalhados ----------------
+def extras_espalhados(jogo, k, rng=random):
+    """Trevos/time/mês sem repetir entre os cartões: com 12 cartões no Dia de Sorte, todos os meses ficam
+    cobertos e o Mês da Sorte sai garantido em todo concurso."""
+    if jogo == "maismilionaria":
+        pares = [[a, b] for a in range(1, 7) for b in range(a + 1, 7)]
+        rng.shuffle(pares)
+        return [pares[i % 15] for i in range(k)]
+    if jogo == "diadesorte":
+        meses = MESES[:]
+        rng.shuffle(meses)
+        return [[meses[i % 12]] for i in range(k)]
+    if jogo == "timemania":
+        from core import times_conhecidos
+        times = times_conhecidos()
+        if not times:
+            return [[] for _ in range(k)]
+        esc = rng.sample(times, min(k, len(times)))
+        return [[esc[i % len(esc)]] for i in range(k)]
+    return [[] for _ in range(k)]
+
+
+
 def cartoes_espalhados(jogo, k, n=None, pesos=None, rng=random):
     """k cartões de n dezenas usando cada número o mais igualmente possível (cobertura balanceada).
     Empates são decididos pelos números menos populares e, por fim, ao acaso."""
@@ -207,7 +232,7 @@ def comparar_cobertura(jogo, k, n=None, n_sim=20000, seed=7):
     else:
         aleat = [sorted(rng.sample(range(1, N + 1), n)) for _ in range(k)]
     tv = [sorted(rng.sample(range(1, 7), 2)) for _ in range(k)] if jogo == "maismilionaria" else None
-    tv_esp = [[1 + (2 * i) % 6, 1 + (2 * i + 1) % 6] for i in range(k)] if jogo == "maismilionaria" else None
+    tv_esp = extras_espalhados(jogo, k, rng) if jogo == "maismilionaria" else None
     p_esp = simular_cobertura(jogo, esp, n_sim, random.Random(seed + 1), tv_esp)
     p_ale = simular_cobertura(jogo, aleat, n_sim, random.Random(seed + 1), tv)
     return esp, tv_esp, p_esp, p_ale
@@ -326,3 +351,133 @@ def fator_divisao(jogo, card):
     if not w or jogo == "supersete":
         return None
     return math.exp(sum(w.get(x, 0) for x in card))
+
+
+# ---------------- treino automático ----------------
+def treinar_todos(avisar=print):
+    """Retreina a popularidade de todos os jogos (roda depois de baixar resultados)."""
+    ok = []
+    for j in POP_JOGOS:
+        try:
+            m = treinar_popularidade(j)
+            ok.append(f"{j} {'ok' if m['confiavel'] else 'sem padrão'} ({m['r2_teste']:.0%})")
+        except ValueError as e:
+            log.info("popularidade %s: %s", j, e)
+        except Exception:
+            log.warning("popularidade %s falhou", j, exc_info=True)
+    if ok:
+        avisar("Modelo de popularidade atualizado: " + ", ".join(ok))
+    return ok
+
+
+# ---------------- teste no passado ----------------
+def _ganho_cartao(jogo, card, tv, d, meta):
+    """Prêmio real de um cartão num sorteio, com os valores pagos naquele concurso.
+    Cartão com mais dezenas = todas as apostas simples contidas nele."""
+    N, K, mn, fx, _ = JOGOS[jogo]
+    pr = meta.get("premios", [])
+    ganho, faixas = 0.0, []
+    if jogo == "supersete":
+        h = sum(a == b for a, b in zip(card, d))
+        p = premio(jogo, h, 0, pr) if h in fx else None
+        return (p[1] or 0, [p[0]]) if p else (0.0, [])
+    h = len(set(card) & set(d))
+    th = len(set(tv) & set(meta.get("trevos", []))) if jogo == "maismilionaria" else 0
+    n = len(card)
+    for j in fx:
+        qtd = math.comb(h, j) * math.comb(n - h, mn - j)
+        if not qtd:
+            continue
+        p = premio(jogo, j, th, pr)
+        if p and p[1]:
+            ganho += qtd * p[1]
+            faixas.append(p[0])
+    if jogo in EXTRA and tv and meta.get(EXTRA[jogo][0]) == tv[0]:
+        val = dict((a, b) for a, b in pr).get(EXTRA[jogo][1]) or 0
+        ganho += val
+        faixas.append(EXTRA[jogo][1])
+    return ganho, faixas
+
+
+def _extra_acaso(jogo, rng):
+    if jogo == "diadesorte":
+        return [rng.choice(MESES)]
+    from core import times_conhecidos
+    times = times_conhecidos()
+    return [rng.choice(times)] if times else []
+
+
+def testar_no_passado(jogo, k, n=None, concursos=104, retorno_min=0.0, seed=7):
+    """Joga o plano (k cartões espalhados de n dezenas) em cada um dos últimos concursos, com os prêmios
+    reais pagos. Com retorno_min, só joga quando o retorno estimado antes do sorteio passava do mínimo.
+    Compara com cartões ao acaso e com 'jogar sempre'."""
+    N, K, mn, _, _ = JOGOS[jogo]
+    n = n or mn
+    rows = db().execute("SELECT concurso, dezenas, meta FROM draws WHERE jogo=? AND meta IS NOT NULL "
+                        "ORDER BY concurso DESC LIMIT ?", (jogo, concursos)).fetchall()[::-1]
+    if len(rows) < 10:
+        raise ValueError(f"{jogo}: baixe os resultados primeiro.")
+    filtro = None
+    if retorno_min > 0:
+        filtro = {c: r for c, _, r in historico_retorno(jogo, concursos + 1)}
+    rng = random.Random(seed)
+    preco = custo(jogo, list(range(1, n + 1)), [1, 2] if jogo == "maismilionaria" else [])
+
+    def plano(espalhado):
+        res = {"jogados": 0, "gasto": 0.0, "ganho": 0.0, "com_premio": 0, "maior": 0.0, "faixas": Counter()}
+        for conc, _, _ in rows:
+            if filtro is not None and filtro.get(conc, 0) < retorno_min:
+                continue
+            if espalhado:
+                cards = cartoes_espalhados(jogo, k, n, pesos_popularidade(jogo), rng)
+            elif jogo == "supersete":
+                cards = [[rng.randrange(10) for _ in range(7)] for _ in range(k)]
+            else:
+                cards = [sorted(rng.sample(range(1, N + 1), n)) for _ in range(k)]
+            if espalhado:
+                tvs = extras_espalhados(jogo, k, rng)
+            elif jogo == "maismilionaria":
+                tvs = [sorted(rng.sample(range(1, 7), 2)) for _ in cards]
+            elif jogo in EXTRA:
+                tvs = [e for _ in cards for e in [_extra_acaso(jogo, rng)]]
+            else:
+                tvs = [[] for _ in cards]
+            g_conc = 0.0
+            for _, d, meta in _sorteios(jogo, [r for r in rows if r[0] == conc]):
+                for c, t in zip(cards, tvs):
+                    g, fxs = _ganho_cartao(jogo, c, t, d, meta)
+                    g_conc += g
+                    res["faixas"].update(fxs)
+            res["jogados"] += 1
+            res["gasto"] += k * preco
+            res["ganho"] += g_conc
+            res["com_premio"] += g_conc > 0
+            res["maior"] = max(res["maior"], g_conc)
+        return res
+
+    return {"jogo": jogo, "k": k, "n": n, "concursos": len(rows), "retorno_min": retorno_min,
+            "esp": plano(True), "acaso": plano(False)}
+
+
+def texto_teste(r):
+    def bloco(nome, x):
+        if not x["jogados"]:
+            return [f"{nome}: nenhum concurso passou do retorno mínimo."]
+        saldo = x["ganho"] - x["gasto"]
+        return [f"{nome}:",
+                f"  jogou {x['jogados']} concursos | gastou {brl(x['gasto'])} | ganhou {brl(x['ganho'])} | "
+                f"saldo {brl(saldo)} ({x['ganho'] / x['gasto']:.0%} de volta)",
+                f"  premiou em {x['com_premio']} concursos ({x['com_premio'] / x['jogados']:.0%}) | "
+                f"maior prêmio num concurso: {brl(x['maior'])}",
+                "  faixas: " + (", ".join(f"{f} x{q}" for f, q in x["faixas"].most_common()) or "nenhuma")]
+    filtro = (f", só quando o retorno estimado passava de {r['retorno_min']:.0%}" if r["retorno_min"] else "")
+    out = [f"=== TESTE NO PASSADO: {r['jogo'].upper()}, {r['k']} cartão(ões) de {r['n']} dezenas por concurso, "
+           f"últimos {r['concursos']} concursos{filtro} ===", "",
+           "Prêmios reais pagos em cada concurso. Os cartões são gerados como o app geraria naquele dia "
+           "(o sorteio ainda não era conhecido).", ""]
+    out += bloco("Plano do Otimizador (cartões espalhados)", r["esp"]) + [""]
+    out += bloco("Mesmo gasto com cartões ao acaso", r["acaso"])
+    out += ["", "Um teste no passado mostra o que teria acontecido, não o que vai acontecer. Variações entre os "
+                "dois planos em poucos concursos são em grande parte sorte; o que se mantém no longo prazo é o "
+                "retorno médio de cada jogo (aba Retorno)."]
+    return "\n".join(out)

@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -801,34 +801,117 @@ def alerta_agendado():
 
 
 # ---------------- fechamento ----------------
-def fechamento(nums, k, t, m, progresso=None):
-    """Cobertura gulosa: gera cartões de k dezenas tais que, se m das dezenas escolhidas forem
-    sorteadas, pelo menos um cartão tenha t acertos. Cada dezena vira um bit para contar rápido."""
+def _fech_bits(v, k, t, m, rng=None, progresso=None):
+    """Cobertura gulosa em bits. Com rng, empates e candidatos variam a cada rodada (para os reinícios)."""
+    alvos = {sum(1 << i for i in c) for c in combinations(range(v), m)}
+    todas = [sum(1 << i for i in c) for c in combinations(range(v), k)] if math.comb(v, k) <= 1500 else None
+    rnd = rng or random
+    cartoes = []
+    while alvos:
+        if todas:
+            cands = todas
+            if rng:
+                cands = cands[:]
+                rng.shuffle(cands)
+        else:
+            cands = []
+            for a in rnd.sample(list(alvos), min(len(alvos), 120)):
+                bits = [i for i in range(v) if a >> i & 1]
+                pick = set(rnd.sample(bits, t))
+                pick.update(rnd.sample([i for i in range(v) if i not in pick], k - t))
+                cands.append(sum(1 << i for i in pick))
+        best = max(cands, key=lambda c: sum(1 for a in alvos if (a & c).bit_count() >= t))
+        alvos = {a for a in alvos if (a & best).bit_count() < t}
+        cartoes.append(best)
+        if progresso:
+            progresso(len(cartoes), len(alvos))
+    return cartoes
+
+
+def _podar(cartoes, v, t, m, rng=None):
+    """Remove cartões redundantes: os que só cobrem combinações já cobertas por outros."""
+    alvos = [sum(1 << i for i in c) for c in combinations(range(v), m)]
+    cobre = [[a for a in alvos if (a & c).bit_count() >= t] for c in cartoes]
+    cnt = Counter(a for cs in cobre for a in cs)
+    ordem = list(range(len(cartoes)))
+    (rng or random).shuffle(ordem)
+    fica = set(ordem)
+    for i in ordem:
+        if all(cnt[a] >= 2 for a in cobre[i]):
+            fica.discard(i)
+            for a in cobre[i]:
+                cnt[a] -= 1
+    return [cartoes[i] for i in sorted(fica)]
+
+
+def _reduzir(cartoes, v, k, t, m, fim, rng):
+    """Busca local (recozimento simulado, como Nurmela-Östergård): tira um cartão e troca uma dezena por vez
+    nos outros até cobrir tudo de novo. Se cobrir, tenta com um cartão a menos. Para no prazo 'fim'."""
+    import time
+    alvos = [sum(1 << i for i in c) for c in combinations(range(v), m)]
+    melhor = cartoes
+    while time.monotonic() < fim and len(melhor) > 1:
+        cur = melhor[:]
+        cur.pop(rng.randrange(len(cur)))
+        cnt = Counter()
+        for c in cur:
+            for a in alvos:
+                if (a & c).bit_count() >= t:
+                    cnt[a] += 1
+        desc = [a for a in alvos if not cnt[a]]
+        temp = 1.0
+        while desc and time.monotonic() < fim:
+            alvo = rng.choice(desc)
+            i = rng.randrange(len(cur))
+            c = cur[i]
+            # troca 1 dezena: entra uma do alvo que falta no cartão, sai uma do cartão que não está no alvo
+            ent = [b for b in range(v) if alvo >> b & 1 and not c >> b & 1]
+            sai = [b for b in range(v) if c >> b & 1 and not alvo >> b & 1]
+            if not ent or not sai:
+                continue
+            novo = c ^ (1 << rng.choice(ent)) ^ (1 << rng.choice(sai))
+            perde = [x for x in alvos if (x & c).bit_count() >= t and (x & novo).bit_count() < t]
+            ganha = [x for x in alvos if (x & novo).bit_count() >= t and (x & c).bit_count() < t]
+            delta = sum(1 for x in perde if cnt[x] == 1) - sum(1 for x in ganha if not cnt[x])
+            if delta <= 0 or rng.random() < math.exp(-delta / temp):
+                for x in perde:
+                    cnt[x] -= 1
+                for x in ganha:
+                    cnt[x] += 1
+                cur[i] = novo
+                desc = [x for x in alvos if not cnt[x]]
+            temp = max(0.05, temp * 0.999)
+        if not desc:
+            melhor = cur
+    return melhor
+
+
+def fechamento(nums, k, t, m, progresso=None, tempo=0.0, info=None):
+    """Gera cartões de k dezenas tais que, se m das dezenas escolhidas forem sorteadas, pelo menos um cartão
+    tenha t acertos. Começa pela cobertura gulosa, poda cartões redundantes e, com 'tempo' em segundos,
+    tenta reinícios aleatórios guardando o menor conjunto. Cada dezena vira um bit para contar rápido."""
+    import time
     nums = sorted(set(nums))
     v = len(nums)
     if not (t <= m <= v and t <= k <= v):
         raise ValueError("Use: garantia <= condição <= dezenas escolhidas e garantia <= cartão <= dezenas.")
     if math.comb(v, m) > 20000:
         raise ValueError("Combinações demais. Escolha menos dezenas ou uma condição menor.")
-    alvos = {sum(1 << i for i in c) for c in combinations(range(v), m)}
-    todas = [sum(1 << i for i in c) for c in combinations(range(v), k)] if math.comb(v, k) <= 1500 else None
-    cartoes = []
-    while alvos:
-        if todas:
-            cands = todas
-        else:
-            cands = []
-            for a in random.sample(list(alvos), min(len(alvos), 120)):
-                bits = [i for i in range(v) if a >> i & 1]
-                pick = set(random.sample(bits, t))
-                pick.update(random.sample([i for i in range(v) if i not in pick], k - t))
-                cands.append(sum(1 << i for i in pick))
-        best = max(cands, key=lambda c: sum(1 for a in alvos if (a & c).bit_count() >= t))
-        alvos = {a for a in alvos if (a & best).bit_count() < t}
-        cartoes.append(sorted(nums[i] for i in range(v) if best >> i & 1))
-        if progresso:
-            progresso(len(cartoes), len(alvos))
-    return cartoes
+    guloso = _fech_bits(v, k, t, m, progresso=progresso)
+    melhor = _podar(guloso, v, t, m, random.Random(0))
+    inicio = time.monotonic()
+    fim, semente = inicio + tempo * 0.3, 1
+    while time.monotonic() < fim and len(melhor) > 1:
+        rng = random.Random(semente)
+        c = _podar(_fech_bits(v, k, t, m, rng), v, t, m, rng)
+        if len(c) < len(melhor):
+            melhor = c
+        semente += 1
+    if tempo:
+        melhor = _reduzir(melhor, v, k, t, m, inicio + tempo, random.Random(semente))
+    if info is not None:
+        info.update(guloso=len(guloso), final=len(melhor), rodadas=semente)
+    return [sorted(nums[i] for i in range(v) if c >> i & 1) for c in melhor]
 
 
 # ---------------- apostas ----------------
