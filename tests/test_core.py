@@ -174,3 +174,16 @@ def test_checar_update(monkeypatch):
         raise OSError
     monkeypatch.setattr(core, "_get", falha)
     assert core.checar_update() is None
+
+
+def test_aposta_com_mais_dezenas_soma_todas_as_simples():
+    # Mega com 7 dezenas e 5 acertos = 2 quinas + 5 quadras; +Milionária com 3 trevos e 2 acertados
+    _salva("megasena", 70, range(1, 7), [["6 acertos", 0], ["5 acertos", 100.0], ["4 acertos", 10.0]])
+    core.save_bet("gabi", "megasena", [1, 2, 3, 4, 5, 50, 51], [], 70)
+    b = core.check_bets("gabi")[0]
+    assert b["ganhos"] == 2 * 100 + 5 * 10
+    _salva("maismilionaria", 71, range(1, 7), [["4 acertos + 2 trevos", 50.0],
+                                               ["4 acertos + 1 ou nenhum trevo", 20.0]], trevos=[1, 2])
+    core.save_bet("gabi", "maismilionaria", [1, 2, 3, 4, 40, 41], [1, 2, 3], 71)
+    # pares de trevos: (1,2) acerta 2; (1,3) e (2,3) acertam 1
+    assert core.check_bets("gabi")[0]["ganhos"] == 50 + 2 * 20

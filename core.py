@@ -1112,14 +1112,30 @@ def check_bets(user):
                 val = dict(meta.get("premios", [])).get(desc) or 0
                 ganhos += val
                 res.append((conc, desc, val))
-            if h not in JOGOS[jogo][3]:
+            if jogo == "supersete":
+                if h not in JOGOS[jogo][3]:
+                    continue
+                p = premio(jogo, h, th, meta.get("premios", []))
+                val = p[1] if p else 0
+                ganhos += val or 0
+                res.append((conc, p[0] if p else f"{h} acertos", val))
                 continue
-            p = premio(jogo, h, th, meta.get("premios", []))
-            if jogo == "maismilionaria" and not p:
-                continue
-            val = p[1] if p else 0
-            ganhos += val or 0
-            res.append((conc, p[0] if p else f"{h} acertos", val))
+            # aposta com mais dezenas/trevos = todas as apostas simples contidas nela
+            mn, nt = JOGOS[jogo][2], len(tv)
+            pares = ({2: math.comb(th, 2), 1: th * (nt - th), 0: math.comb(nt - th, 2)}
+                     if jogo == "maismilionaria" else {th: 1})
+            for j in JOGOS[jogo][3]:
+                for t2, qp in pares.items():
+                    qtd = math.comb(h, j) * math.comb(len(dz) - h, mn - j) * qp
+                    if not qtd:
+                        continue
+                    p = premio(jogo, j, t2, meta.get("premios", []))
+                    if jogo == "maismilionaria" and not p:
+                        continue
+                    val = (p[1] or 0) * qtd if p else 0
+                    ganhos += val
+                    desc = p[0] if p else f"{j} acertos"
+                    res.append((conc, desc if qtd == 1 else f"{qtd}x {desc}", val))
         out.append({"id": bid, "jogo": jogo, "dezenas": dz, "trevos": tv, "desde": desde,
                     "conferidos": len(rows), "melhor": melhor, "ganhos": ganhos, "premiadas": res})
     return out
