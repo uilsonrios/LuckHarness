@@ -1190,8 +1190,9 @@ def fatos_app(jogo):
         log.warning("fatos: chances", exc_info=True)
     try:
         ev = valor_esperado(jogo)
-        linhas.append(f"- Retorno médio hoje: {ev['retorno']:.0%} do valor apostado (abaixo de 100% = perde em "
-                      "média).")
+        if ev["retorno"] > 0:   # banco vazio dá 0%: melhor não dizer nada
+            linhas.append(f"- Retorno médio hoje: {ev['retorno']:.0%} do valor apostado (abaixo de 100% = perde "
+                          "em média).")
     except Exception:
         pass
     m = _modelo(jogo)
@@ -1200,6 +1201,9 @@ def fatos_app(jogo):
                       "se a combinação sorteada era muito ou pouco jogada (é a nota do modelo, NÃO a popularidade de "
                       f"um cartão; {'usado' if m.get('confiavel') else 'não confiável, não usado'}).")
     melhores = sorted(JOGOS, key=lambda j: -prob_premio(j) / JOGOS[j][4])[:3]
+    precos = ", ".join(f"{j} R$ {JOGOS[j][4]:.2f}".replace(".", ",") for j in JOGOS)
+    linhas.append(f"- Preço da aposta simples: {precos}. Todos os cartões têm a MESMA chance de acerto; "
+                  "o fechamento custa um cartão por linha (não sai pelo preço de uma aposta).")
     linhas += [f"- Mais fáceis de premiar por real: {', '.join(melhores)}.", "- " + TESTADO_NAO_FUNCIONA,
                "- " + TESTADO_FUNCIONA]
     return "\n".join(linhas)

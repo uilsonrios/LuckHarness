@@ -81,3 +81,20 @@ def test_contexto_da_ia_cabe_no_limite(app):
     app.last_sugs = [("lotofacil", list(range(1, 16)))] * 6
     ctx = app.context()
     assert len(ctx) < sum(app.CTX_LIMITES.values()) + 3000   # ~4 caracteres por token: cabe em 8192 tokens
+
+
+def test_aposta_da_semana_monta_e_registra(app, monkeypatch):
+    assert app.nb.tab(0, "text") == "Minha aposta da semana"
+    app.jogo.set("lotofacil")
+    assert app.jogo.get() == "lotofacil" and ui.ttk.Combobox.get(app.jogo) == "Lotofácil"
+    app.s_val.delete(0, "end"); app.s_val.insert(0, "9")
+    monkeypatch.setattr(ui, "sugestoes", lambda j, q, n=None: [list(range(1 + i, 16 + i)) for i in range(q)])
+    app.montar_semana()
+    fim = time.monotonic() + 20
+    while not app.s_cards and time.monotonic() < fim:
+        app.update()
+        time.sleep(0.05)
+    assert len(app.s_cards) == 3
+    antes = core.banca_mes("ui_teste")[0]
+    app.apostei()
+    assert core.banca_mes("ui_teste")[0] == antes + 9

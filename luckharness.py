@@ -14,6 +14,24 @@ import laboratorio as lab
 BG, CARD, FIELD, FG, MUTED, ACCENT = "#0f1117", "#181b24", "#232734", "#e6e8ee", "#8a90a2", "#00d4aa"
 WARN, IA_COLOR = "#ffb454", "#b8a4ff"
 FONT = "Segoe UI"
+NOMES = {"megasena": "Mega-Sena", "lotofacil": "Lotofácil", "quina": "Quina", "lotomania": "Lotomania",
+         "duplasena": "Dupla Sena", "timemania": "Timemania", "diadesorte": "Dia de Sorte",
+         "maismilionaria": "+Milionária", "supersete": "Super Sete"}
+
+
+class JogoBox(ttk.Combobox):
+    """Mostra o nome amigável do jogo, mas get()/set() continuam usando a chave interna (ex.: 'lotofacil')."""
+
+    def __init__(self, parent, **kw):
+        self._chaves = list(JOGOS)
+        super().__init__(parent, values=[NOMES.get(j, j) for j in self._chaves], state="readonly", **kw)
+
+    def get(self):
+        nome = super().get()
+        return next((j for j in self._chaves if NOMES.get(j, j) == nome), nome)
+
+    def set(self, jogo):
+        super().set(NOMES.get(jogo, jogo))
 
 
 def load_avatar(size):
@@ -256,15 +274,20 @@ class App(tk.Tk):
 
         head = ttk.Frame(self, style="Card.TFrame", padding=(16, 10)); head.pack(fill="x")
         ttk.Label(head, text="LuckHarness", style="Title.TLabel").pack(side="left")
-        ttk.Button(head, text="Sair", style="Ghost.TButton", command=self.sair).pack(side="right")
-        ttk.Button(head, text="Restaurar", style="Ghost.TButton", command=self.restaurar).pack(side="right", padx=6)
-        ttk.Button(head, text="Backup", style="Ghost.TButton", command=self.backup).pack(side="right")
-        ttk.Label(head, text=f"● {user}  ", style="Muted.TLabel").pack(side="right")
+        # Backup/Restaurar/Sair num menu só: a barra não corta em telas de 1000 px
+        mb = ttk.Menubutton(head, text=f"● {user} ▾", style="Ghost.TButton")
+        menu = tk.Menu(mb, tearoff=0)
+        menu.add_command(label="Fazer backup...", command=self.backup)
+        menu.add_command(label="Restaurar backup...", command=self.restaurar)
+        menu.add_separator()
+        menu.add_command(label="Sair da conta", command=self.sair)
+        mb["menu"] = menu; mb.pack(side="right")
+        self.gasto_lbl = ttk.Label(head, text="", style="Muted.TLabel"); self.gasto_lbl.pack(side="right", padx=12)
 
-        jogo0 = pr.get("jogo") if pr.get("jogo") in JOGOS else "megasena"
+        jogo0 = pr.get("jogo") if pr.get("jogo") in JOGOS else "lotofacil"
         bar = ttk.Frame(self, padding=(16, 12)); bar.pack(fill="x")
         ttk.Label(bar, text="Jogo").pack(side="left")
-        self.jogo = ttk.Combobox(bar, values=list(JOGOS), width=14, state="readonly")
+        self.jogo = JogoBox(bar, width=13)
         self.jogo.set(jogo0); self.jogo.pack(side="left", padx=(6, 14))
         self.jogo.bind("<<ComboboxSelected>>", lambda e: self.on_jogo())
         ttk.Label(bar, text="Concursos").pack(side="left")
@@ -285,6 +308,7 @@ class App(tk.Tk):
         self.out = text_box(self.nb, font=("Consolas", 10))
         self.out.tag_configure("head", foreground=ACCENT, font=("Consolas", 11, "bold"))
         self.out.tag_configure("err", foreground="#ff6b6b")
+        self.build_semana()
         self.nb.add(self.out, text="Análise")
         self.build_charts()
         self.build_bets()
@@ -336,6 +360,79 @@ class App(tk.Tk):
         f = ttk.Frame(self.nb, style="Card.TFrame", padding=12)
         self.nb.add(f, text=title)
         return f
+
+    def build_semana(self):
+        """Tela inicial: quanto quero gastar -> cartões prontos, chances e botão 'Apostei'."""
+        f = self.tab("Minha aposta da semana")
+        row = ttk.Frame(f, style="Card.TFrame"); row.pack(fill="x", pady=(0, 8))
+        ttk.Label(row, text="Quanto quer gastar (R$)", style="Card.TLabel").pack(side="left")
+        self.s_val = ttk.Entry(row, width=8); self.s_val.pack(side="left", padx=6)
+        self.s_val.insert(0, str(load_prefs().get("orcamento") or 15))
+        ttk.Button(row, text="Montar minha aposta", style="Accent.TButton", command=self.montar_semana).pack(
+            side="left", padx=6)
+        self.s_ok = ttk.Button(row, text="Apostei", style="Ghost.TButton", command=self.apostei, state="disabled")
+        self.s_ok.pack(side="left")
+        self.s_out = text_box(f, wrap="word", font=(FONT, 10)); self.s_out.pack(fill="both", expand=True)
+        self.s_out.tag_configure("head", foreground=ACCENT, font=(FONT, 11, "bold"))
+        self.s_out.insert("end", "Escolha o jogo lá em cima, diga quanto quer gastar e clique em "
+                                 "'Montar minha aposta'.\n\nO app monta cartões que cobrem números diferentes "
+                                 "(mais chance de algum prêmio) e, quando possível, com números pouco jogados "
+                                 "(se ganhar, divide menos o prêmio). Ninguém prevê os números sorteados.")
+        self.s_cards = []
+
+    def montar_semana(self):
+        try:
+            orc = float(self.s_val.get().replace("R$", "").replace(",", ".").strip())
+        except ValueError:
+            messagebox.showerror("Aposta da semana", "Informe um valor, ex.: 15")
+            return
+        jogo = self.jogo.get()
+        preco = JOGOS[jogo][4]
+        if orc < preco:
+            messagebox.showinfo("Aposta da semana", f"Um cartão de {NOMES[jogo]} custa {brl(preco)}.")
+            return
+        save_prefs(orcamento=orc)
+        qtd = min(int(orc // preco), 20)
+        self.s_ok.configure(state="disabled")
+
+        def f():
+            cards = sugestoes(jogo, qtd)
+            itens = [(a, extra_aleatorio(jogo)) for a in cards]
+            g, _ = banca_mes(self.user)
+            linhas = [f"{NOMES[jogo]}: {qtd} cartão(ões), total {brl(qtd * preco)}\n"]
+            for i, (a, t) in enumerate(itens, 1):
+                fd = fator_divisao(jogo, a)
+                linhas.append(f"  {i}. {fmt_bet(jogo, a, t)}"
+                              + (f"   (se ganhar, divide {'menos' if fd < 1 else 'mais'} que a média)" if fd else ""))
+            txt = "\n".join(linhas) + "\n\n" + texto_chances_cartoes(jogo, cards)
+            txt += f"\n\nGasto no mês até agora: {brl(g)}. Clique em 'Apostei' depois de jogar na lotérica."
+
+            def mostra():
+                self.s_cards = [(jogo, a, t) for a, t in itens]
+                self.s_out.delete("1.0", "end"); self.s_out.insert("end", txt)
+                self.s_ok.configure(state="normal")
+            self.after(0, mostra)
+        self.bg(f)
+
+    def apostei(self):
+        if not self.s_cards:
+            return
+        total = sum(custo(j, a, t) for j, a, t in self.s_cards)
+        lim = load_prefs().get(f"limite_{self.user}") or 0
+        g, _ = banca_mes(self.user)
+        if lim and g + total > lim and not messagebox.askyesno(
+                "Limite da banca", f"Com esta aposta o gasto do mês vai a {brl(g + total)}, acima do seu limite "
+                                   f"de {brl(lim)}.\n\nRegistrar mesmo assim?"):
+            return
+        for jogo, nums, trevos in self.s_cards:
+            bid = save_bet(self.user, jogo, nums, trevos, last_concurso(jogo) + 1)
+            add_banca(self.user, "Gasto", custo(jogo, nums, trevos), f"Aposta #{bid} {jogo}")
+        self.s_cards = []
+        self.s_ok.configure(state="disabled")
+        self.s_out.insert("end", f"\n\nRegistrado: {brl(total)}. As apostas são conferidas sozinhas em "
+                                 "'Minhas apostas' quando sair o resultado.", "head")
+        self.refresh_bets()
+        self.refresh_banca()
 
     def build_charts(self):
         f = self.tab("Gráficos")
@@ -971,10 +1068,12 @@ class App(tk.Tk):
         def f():
             self.log("Gerando apostas sugeridas...", "head")
             self._analysis(*p, aviso=False)
-            jogo, s = self.dados["jogo"], self.dados
+            jogo = self.dados["jogo"]
             self.log("\nApostas sugeridas (as mesmas do Otimizador: cartões espalhados e, com o modelo de "
                      "popularidade, números pouco jogados):", "head")
-            sugs = sugestoes(jogo, 5, p[2] if jogo != "supersete" else None)
+            orc = float(load_prefs().get("orcamento") or 0)
+            qtd = max(1, min(5, int(orc // JOGOS[jogo][4]))) if orc else 5   # respeita o orçamento salvo
+            sugs = sugestoes(jogo, qtd, p[2] if jogo != "supersete" else None)
             self.last_sugs = [(jogo, a) for a in sugs]
             for a in sugs:
                 fd = fator_divisao(jogo, a)
@@ -986,10 +1085,6 @@ class App(tk.Tk):
             c = custo(jogo, sugs[0], [])
             self.log(f"Cada aposta: custo {brl(c)}, valor esperado {brl(ev['ev'] * c / ev['preco'])}, "
                      f"retorno {ev['retorno']:.0%}. Detalhes na aba Retorno.")
-            if s.get("pick"):
-                self.log("Só demonstração (não entra nas sugeridas): o que o modelo de previsão escolheria. "
-                         "Veja o teste acima: ele não acerta mais que o acaso.", "head")
-                self.log("  " + fmt_bet(jogo, s["pick"], []))
             self.log("Use 'Salvar sugeridas' na aba Minhas apostas para acompanhar estas apostas."
                      + (" Trevos/time/mês são sorteados ao salvar (dá para trocar em 'Editar')."
                         if jogo in EXTRA or jogo == "maismilionaria" else ""))
@@ -1274,6 +1369,9 @@ class App(tk.Tk):
     def refresh_banca(self):
         g, p = banca_mes(self.user)
         lim = load_prefs().get(f"limite_{self.user}") or 0
+        self.gasto_lbl.configure(text=f"Gasto no mês: {brl(g)}" + (f" de {brl(lim)}" if lim else ""),
+                                 foreground="#ff6b6b" if lim and g >= lim else WARN if lim and g >= .8 * lim
+                                 else MUTED)
         txt = f"Este mês: gastos {brl(g)}  |  prêmios {brl(p)}  |  saldo {brl(p - g)}"
         if lim:
             txt += f"  |  {g / lim:.0%} do limite de {brl(lim)}"
@@ -1341,6 +1439,7 @@ class App(tk.Tk):
         self.q.delete(0, "end")
         self.chat.insert("end", "\nVocê\n", "you"); self.chat.insert("end", q + "\n")
         self.chat.insert("end", "\nHarness IA\n", "ia")
+        self.chat.insert("end", "Pensando…", "pensando")
         self.chat.see("end")
         msgs = load_chat(self.user, 6) + [{"role": "user", "content": f"{q}\n\nContexto:\n{self.context()}"}]
         jogo = self.jogo.get()
@@ -1353,7 +1452,12 @@ class App(tk.Tk):
                       + ([da_pergunta] if da_pergunta else []))
         sugs_fator = [(a, fator_divisao(j, a)) for j, a in self.last_sugs]
         save_chat(self.user, "user", q)
-        cb = lambda t: self.after(0, lambda: (self.chat.insert("end", t), self.chat.see("end")))
+
+        def escreve(t):
+            if self.chat.tag_ranges("pensando"):
+                self.chat.delete("pensando.first", "pensando.last")
+            self.chat.insert("end", t); self.chat.see("end")
+        cb = lambda t: self.after(0, lambda: escreve(t))
 
         def f():
             try:
@@ -1364,7 +1468,11 @@ class App(tk.Tk):
                     cb("\n\n[Aviso do LuckHarness: a resposta acima contradiz o que o app testou]\n"
                        + "\n".join(f"- A IA {a}" for a in avisos))
             except Exception as e:
-                cb(f"[falha Ollama: {e}. Abra o Ollama e rode 'ollama pull {self.model}']")
+                if any(k in str(e).lower() for k in ("10061", "refused", "recusou")):
+                    cb("A IA local (Ollama) não está aberta. Instale em ollama.com, abra o programa e rode "
+                       f"'ollama pull {self.model}' uma vez. O resto do app funciona sem ela.")
+                else:
+                    cb(f"[falha Ollama: {e}. Abra o Ollama e rode 'ollama pull {self.model}']")
             cb("\n")
         threading.Thread(target=f, daemon=True).start()
 
