@@ -304,7 +304,11 @@ def simular_cobertura(jogo, cards, n_sim=20000, rng=random, trevos=None):
         else:
             s = set(rng.sample(range(1, N + 1), K))
         ts = set(rng.sample(range(1, 7), 2)) if jogo == "maismilionaria" else set()
-        ok += any(_premiou(jogo, c, s, t, ts) for c, t in zip(cards, trevos))
+        ok_s = any(_premiou(jogo, c, s, t, ts) for c, t in zip(cards, trevos))
+        if jogo == "duplasena" and not ok_s:   # 2º sorteio do mesmo concurso
+            s2 = set(rng.sample(range(1, N + 1), K))
+            ok_s = any(_premiou(jogo, c, s2) for c in cards)
+        ok += ok_s
     return ok / n_sim
 
 

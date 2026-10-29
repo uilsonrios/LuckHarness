@@ -168,3 +168,10 @@ def test_chances_dos_cartoes():
     assert "15 acertos: 1 em 3.268.760" in t and "1 em 1.634.380" in t
     m = o.texto_chances_cartoes("megasena", [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]])
     assert "algum prêmio: 1 em 1.149" in m
+
+
+def test_cobertura_duplasena_conta_os_dois_sorteios():
+    import random as rd
+    p1 = o.prob_premio("duplasena", 6, extra=False)
+    sim = o.simular_cobertura("duplasena", [[1, 2, 3, 4, 5, 6]], 40000, rd.Random(3))
+    assert sim == pytest.approx(p1, rel=0.1)
