@@ -289,7 +289,7 @@ class App(tk.Tk):
         self.jogo.bind("<<ComboboxSelected>>", lambda e: self.on_jogo())
         ttk.Label(bar, text="Concursos").pack(side="left")
         self.n = tk.IntVar(value=pr.get("n", 300))
-        ttk.Spinbox(bar, from_=60, to=5000, increment=20, textvariable=self.n, width=5).pack(side="left", padx=(6, 14))
+        ttk.Spinbox(bar, from_=10, to=5000, increment=10, textvariable=self.n, width=5).pack(side="left", padx=(6, 14))
         ttk.Label(bar, text="Dezenas/aposta").pack(side="left")
         self.bet = tk.IntVar(value=pr.get("bet", JOGOS[jogo0][2]))
         ttk.Spinbox(bar, from_=5, to=50, textvariable=self.bet, width=4).pack(side="left", padx=(6, 14))
@@ -1124,7 +1124,9 @@ class App(tk.Tk):
     def sync(self):
         self.log("Baixando resultados...", "head")
         jogo, n = self.jogo.get(), self.n.get()
-        self.bg(lambda: (sync_draws(jogo, n, self.log), self.log("Concluído.", "head"),
+        self.bg(lambda: (sync_draws(jogo, n, self.log),
+                         self.log(f"Concluído. O histórico completo fica salvo; 'Analisar' usa os últimos {n} "
+                                  "concursos (o modelo de aprendizado usa pelo menos 300).", "head"),
                          self.refresh_bets(), treinar_todos(lambda t: self.log(t, "head"))))
 
     def _params(self):
