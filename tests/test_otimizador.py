@@ -190,3 +190,19 @@ def test_checagem_sem_alarme_falso(txt):
 def test_checagem_ainda_pega_previsao_e_garantia():
     assert o.checar_resposta("Use o modelo para prever o próximo resultado.", "megasena")
     assert o.checar_resposta("Este método dá garantia de lucro.", "megasena")
+
+
+@pytest.mark.parametrize("txt", [
+    "**Estratégias sem efeito**\n- Números quentes/frios/atrasados\n- Modelos de previsão (incluindo redes neurais)",
+    "Testado sem efeito:\n- números quentes\n- números atrasados",
+    "Tudo que parece funcionar (números quentes, repetição) é indistinguível do acaso.",
+    "Nada garante lucro.",
+    "### Observações:\n- **Números quentes, frios, atrasados**: Não afetam a chance de acerto."])
+def test_checagem_respostas_reais_corretas(txt):
+    # respostas reais do qwen3:4b que estavam certas e eram acusadas
+    assert o.checar_resposta(txt, "quina") == []
+
+
+def test_checagem_lista_sem_negacao_ainda_acusa():
+    assert o.checar_resposta("Minhas dicas:\n- jogue os números quentes", "quina")
+    assert o.checar_resposta("Dica:\n- **Números quentes**: jogue estes.", "quina")

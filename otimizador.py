@@ -1218,7 +1218,7 @@ _ALERTAS = [
 ]
 
 
-_NEGA = (r"\bn[ãa]o\b|\bnenhum|\bnem\b|\bnunca\b|sem efeito|igual ao acaso|\bmito\b|imposs[íi]vel|ningu[ée]m|"
+_NEGA = (r"\bn[ãa]o\b|\bnenhum|\bnem\b|\bnunca\b|sem efeito|igual ao acaso|\bmito\b|imposs[íi]vel|ningu[ée]m|\bnada\b|indisting|"
          r"\bmesmo (usando|jogando|com)\b|independente|aleat[óo]ri|\btest(ou|ado|e)\b|\bevite\b|em vez de")
 # contextos em que o alerta não se aplica: prever a POPULARIDADE (o que o público joga) é legítimo, e a
 # garantia de fechamento é verdadeira quando dita como condicional
@@ -1230,8 +1230,20 @@ def checar_resposta(texto, jogo, permitidos=()):
     """Confere a resposta da IA contra o que o app testou. Devolve avisos (vazio se estiver tudo certo)."""
     avisos = []
     # frase a frase: "números quentes NÃO funcionam" é a resposta certa, não uma contradição
-    for frase in re.split(r"(?<=[.!?;:])\s+|\n+", texto.lower()):
-        if re.search(_NEGA, frase):
+    # itens de lista sob um título negado ("Sem efeito:" / "**Testado e sem efeito**") herdam a negação
+    herda = False
+    frases = []
+    for linha in texto.lower().splitlines():
+        if not re.match(r"\s*([-*•]|\d+[.)])\s", linha):
+            titulo = re.search(r"(:|\*\*)\s*$", linha) or linha.lstrip().startswith("#")
+            herda = bool(titulo and re.search(_NEGA, linha))
+        elif herda:
+            continue
+        frases += re.split(r"(?<=[.!?;:])\s+", linha)
+    for k, frase in enumerate(frases):
+        # "**Números quentes**: não afetam a chance" — o rótulo antes do ':' herda a negação que vem depois
+        seguinte = frases[k + 1] if frase.rstrip().endswith(":") and k + 1 < len(frases) else ""
+        if re.search(_NEGA, frase) or re.search(_NEGA, seguinte):
             continue
         for i, (padrao, msg) in enumerate(_ALERTAS):
             if re.search(padrao, frase) and not (i in _ALERTA_OK and re.search(_ALERTA_OK[i], frase)):
