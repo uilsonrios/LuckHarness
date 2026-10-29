@@ -119,3 +119,30 @@ def test_diadesorte_mes_da_sorte():
     assert core.check_bets("eva")[0]["ganhos"] == 2.5
     with pytest.raises(ValueError):
         core.parse_bet("diadesorte", "1 2 3 4 5 6 7 + xyz")
+
+
+def test_extra_aleatorio_e_editar():
+    _salva("timemania", 50, range(1, 8), [["Time do Coração", 8.5]], time="SANTOS /SP")
+    assert core.extra_aleatorio("diadesorte")[0] in core.MESES
+    assert core.extra_aleatorio("timemania")[0] in core.times_conhecidos()
+    assert len(core.extra_aleatorio("maismilionaria")) == 2
+    assert core.extra_aleatorio("megasena") == []
+    bid = core.save_bet("fabi", "timemania", list(range(1, 11)), [], 50)
+    assert core.editar_extra("fabi", bid, "santos") == ("timemania", ["SANTOS /SP"])
+    assert core.check_bets("fabi")[0]["ganhos"] >= 8.5
+    with pytest.raises(ValueError):
+        core.editar_extra("outro", bid, "santos")
+
+
+def test_backup_restore(tmp_path):
+    core.register("gabi", "segredo3")
+    arq = str(tmp_path / "bk.db")
+    core.backup_db(arq)
+    with core.db() as c:
+        c.execute("DELETE FROM users WHERE name='gabi'")
+    core.restore_db(arq)
+    assert core.check_login("gabi", "segredo3")
+    ruim = tmp_path / "x.db"
+    core.sqlite3.connect(ruim).close()
+    with pytest.raises(ValueError):
+        core.restore_db(str(ruim))

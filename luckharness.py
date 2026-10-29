@@ -2,7 +2,7 @@
 import csv, math, os, sys, threading
 from datetime import date
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext, filedialog
+from tkinter import ttk, messagebox, scrolledtext, filedialog, simpledialog
 
 from core import *  # noqa: F401,F403
 from core import __version__, log
@@ -253,6 +253,8 @@ class App(tk.Tk):
         head = ttk.Frame(self, style="Card.TFrame", padding=(16, 10)); head.pack(fill="x")
         ttk.Label(head, text="LuckHarness", style="Title.TLabel").pack(side="left")
         ttk.Button(head, text="Sair", style="Ghost.TButton", command=self.sair).pack(side="right")
+        ttk.Button(head, text="Restaurar", style="Ghost.TButton", command=self.restaurar).pack(side="right", padx=6)
+        ttk.Button(head, text="Backup", style="Ghost.TButton", command=self.backup).pack(side="right")
         ttk.Label(head, text=f"● {user}  ", style="Muted.TLabel").pack(side="right")
 
         jogo0 = pr.get("jogo") if pr.get("jogo") in JOGOS else "megasena"
@@ -325,6 +327,8 @@ class App(tk.Tk):
         ttk.Button(r2, text="Salvar sugeridas", style="Ghost.TButton", command=self.add_sugs).pack(side="left", padx=6)
         ttk.Button(r2, text="Conferir", style="Ghost.TButton", command=self.refresh_bets).pack(side="left")
         ttk.Button(r2, text="Excluir", style="Ghost.TButton", command=self.del_bet).pack(side="left", padx=6)
+        ttk.Button(r2, text="Editar trevos/time/mês", style="Ghost.TButton",
+                   command=self.edit_bet).pack(side="left")
         ttk.Button(r2, text="Exportar PDF", style="Ghost.TButton", command=lambda: self.export("pdf")).pack(side="right")
         ttk.Button(r2, text="Exportar planilha", style="Ghost.TButton",
                    command=lambda: self.export("csv")).pack(side="right", padx=6)
@@ -704,7 +708,9 @@ class App(tk.Tk):
                 self.log("Aposta do modelo de aprendizado (maiores probabilidades estimadas):", "head")
                 self.log("  " + fmt_bet(jogo, s["pick"], []))
                 self.last_sugs.append((jogo, s["pick"]))
-            self.log("Use 'Salvar sugeridas' na aba Minhas apostas para acompanhar estas apostas.")
+            self.log("Use 'Salvar sugeridas' na aba Minhas apostas para acompanhar estas apostas."
+                     + (" Trevos/time/mês são sorteados ao salvar (dá para trocar em 'Editar')."
+                        if jogo in EXTRA or jogo == "maismilionaria" else ""))
         self.bg(f)
 
     def show_chart(self, kind):
@@ -748,8 +754,7 @@ class App(tk.Tk):
         if not self.last_sugs:
             messagebox.showinfo("Sugeridas", "Clique em 'Sugerir apostas' primeiro.")
             return
-        self._save_bets([(j, a, []) for j, a in self.last_sugs if j != "maismilionaria"] +
-                        [(j, a, [1, 2]) for j, a in self.last_sugs if j == "maismilionaria"])
+        self._save_bets([(j, a, extra_aleatorio(j)) for j, a in self.last_sugs])
         self.last_sugs = []
 
     def _save_bets(self, items):
@@ -765,6 +770,53 @@ class App(tk.Tk):
         self.refresh_banca()
         if self.lanca.get():
             self.check_limit()
+
+    def edit_bet(self):
+        sel = self.tree.selection()
+        if len(sel) != 1:
+            messagebox.showinfo("Editar", "Selecione uma aposta.")
+            return
+        bid, jogo = int(self.tree.set(sel[0], "id")), self.tree.set(sel[0], "jogo")
+        dica = {"timemania": "Time do Coração (ex.: flamengo)", "diadesorte": "Mês da Sorte (ex.: outubro ou 10)",
+                "maismilionaria": "Trevos (ex.: 1 4)"}.get(jogo)
+        if not dica:
+            messagebox.showinfo("Editar", f"{jogo} não tem trevos, time nem mês.")
+            return
+        txt = simpledialog.askstring("Editar aposta", f"Aposta #{bid} ({jogo})\n{dica}:", parent=self)
+        if not txt:
+            return
+        try:
+            _, tv = editar_extra(self.user, bid, txt)
+        except ValueError as e:
+            messagebox.showerror("Editar", str(e))
+            return
+        self.log(f"Aposta #{bid} atualizada: + {' '.join(map(str, tv))}", "head")
+        self.refresh_bets()
+
+    def backup(self):
+        path = filedialog.asksaveasfilename(defaultextension=".db", filetypes=[("Backup LuckHarness", "*.db")],
+                                            initialfile=f"luckharness-backup-{date.today().isoformat()}.db")
+        if path:
+            try:
+                backup_db(path)
+                messagebox.showinfo("Backup", f"Backup salvo em:\n{path}")
+            except Exception as e:
+                log.exception("backup")
+                messagebox.showerror("Backup", str(e))
+
+    def restaurar(self):
+        path = filedialog.askopenfilename(filetypes=[("Backup LuckHarness", "*.db")])
+        if not path or not messagebox.askyesno(
+                "Restaurar", "Isso substitui TODOS os dados atuais (usuários, apostas, banca) pelo backup. Continuar?"):
+            return
+        try:
+            restore_db(path)
+        except Exception as e:
+            log.exception("restore")
+            messagebox.showerror("Restaurar", str(e))
+            return
+        messagebox.showinfo("Restaurar", "Backup restaurado. O app vai fechar; abra de novo.")
+        self.fechar()
 
     def del_bet(self):
         ids = [int(self.tree.set(i, "id")) for i in self.tree.selection()]

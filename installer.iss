@@ -1,5 +1,7 @@
-; mantenha igual a core.__version__
-#define AppVer "1.2.0"
+; versão vem do core.__version__ via build.bat (/DAppVer=...)
+#ifndef AppVer
+  #define AppVer "dev"
+#endif
 [Setup]
 AppName=LuckHarness
 AppVersion={#AppVer}

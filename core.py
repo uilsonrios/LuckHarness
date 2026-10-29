@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -891,6 +891,52 @@ def _extra(jogo, txt, validar=False):
         if len(achou) > 1:
             raise ValueError(f"Timemania: mais de um time combina com '{txt}': {', '.join(achou[:8])}. Inclua o estado.")
     raise ValueError(f"Timemania: time '{txt}' não encontrado. Use o nome como aparece nos resultados, ex.: {times[0]}")
+
+
+def extra_aleatorio(jogo):
+    """Time/mês sorteado para apostas sugeridas: nenhum tem mais chance que outro, então qualquer um serve."""
+    if jogo == "timemania":
+        times = times_conhecidos()
+        return [random.choice(times)] if times else []
+    if jogo == "diadesorte":
+        return [random.choice(MESES)]
+    if jogo == "maismilionaria":
+        return sorted(random.sample(range(1, 7), 2))
+    return []
+
+
+def editar_extra(user, bid, txt):
+    """Troca trevos/time/mês de uma aposta salva, validando como se fosse digitada de novo."""
+    row = db().execute("SELECT jogo, dezenas FROM bets WHERE id=? AND user=?", (bid, user)).fetchone()
+    if not row:
+        raise ValueError("Aposta não encontrada.")
+    jogo, dz = row[0], json.loads(row[1])
+    if jogo not in EXTRA and jogo != "maismilionaria":
+        raise ValueError(f"{jogo} não tem trevos, time nem mês para editar.")
+    _, tv = parse_bet(jogo, " ".join(map(str, dz)) + " + " + txt)
+    if not tv:
+        raise ValueError("Informe o valor depois do '+'.")
+    with db() as c:
+        c.execute("UPDATE bets SET trevos=? WHERE id=? AND user=?", (json.dumps(tv), bid, user))
+    return jogo, tv
+
+
+def backup_db(path):
+    """Cópia consistente do banco (funciona com o app aberto)."""
+    with db() as src, sqlite3.connect(path) as dst:
+        src.backup(dst)
+    dst.close()
+
+
+def restore_db(path):
+    """Substitui o banco atual pelo backup, depois de checar que é um banco do LuckHarness."""
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as src:
+        tabelas = {r[0] for r in src.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {"users", "bets", "draws", "banca"} <= tabelas:
+            raise ValueError("Esse arquivo não é um backup do LuckHarness.")
+        with db() as dst:
+            src.backup(dst)
+    src.close()
 
 
 def apostas_simples(jogo, nums, trevos):
