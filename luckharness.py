@@ -7,6 +7,7 @@ from tkinter import ttk, messagebox, scrolledtext, filedialog, simpledialog
 from core import *  # noqa: F401,F403
 from core import __version__, log
 from otimizador import *  # noqa: F401,F403
+import laboratorio as lab
 
 
 # ---------------- interface ----------------
@@ -291,6 +292,7 @@ class App(tk.Tk):
         self.build_retorno()
         self.build_plano()
         self.build_otim()
+        self.build_lab()
         self.build_banca()
         self.build_chat(body)
 
@@ -506,6 +508,83 @@ class App(tk.Tk):
                                  "que o público mais joga para dividir menos o prêmio.\n\n"
                                  "Ele não prevê sorteios: nenhum método faz isso. Ele tira o máximo de cada real.")
         self.otim_cards, self.otim_txt, self.otim_plan = [], "", None
+
+    def build_lab(self):
+        f = self.tab("Laboratório")
+        r1 = ttk.Frame(f, style="Card.TFrame"); r1.pack(fill="x")
+        ttk.Label(r1, text="Modo", style="Muted.TLabel").pack(side="left")
+        self.l_modo = ttk.Combobox(r1, state="readonly", width=44, values=[
+            "Teste cego (esconde os últimos concursos)", "Teste contínuo (cada concurso só com o passado)"])
+        self.l_modo.current(0); self.l_modo.pack(side="left", padx=6)
+        ttk.Label(r1, text="concursos", style="Muted.TLabel").pack(side="left")
+        self.l_n = tk.IntVar(value=100)
+        ttk.Spinbox(r1, from_=20, to=1000, increment=20, textvariable=self.l_n, width=6).pack(side="left", padx=6)
+        r2 = ttk.Frame(f, style="Card.TFrame"); r2.pack(fill="x", pady=6)
+        self.l_est = {}
+        for nome in lab.ESTRATEGIAS:
+            v = tk.BooleanVar(value=nome != "minha aposta")
+            ttk.Checkbutton(r2, text=nome, variable=v, style="Card.TCheckbutton").pack(side="left", padx=(0, 8))
+            self.l_est[nome] = v
+        r3 = ttk.Frame(f, style="Card.TFrame"); r3.pack(fill="x")
+        ttk.Label(r3, text="Minha aposta", style="Muted.TLabel").pack(side="left")
+        self.l_minha = ttk.Entry(r3, width=30); self.l_minha.pack(side="left", padx=6)
+        ttk.Button(r3, text="Rodar teste", style="Accent.TButton", command=self.run_lab).pack(side="left", padx=6)
+        ttk.Button(r3, text="Registrar para o próximo sorteio", style="Ghost.TButton",
+                   command=self.reg_lab).pack(side="left")
+        ttk.Button(r3, text="Conferir registros", style="Ghost.TButton",
+                   command=lambda: self.bg_lab(lambda: lab.conferir_registros(self.user))).pack(side="left", padx=6)
+        self.l_out = text_box(f, font=("Consolas", 10)); self.l_out.pack(fill="both", expand=True, pady=(8, 0))
+        self.l_out.insert("end", "Teste qualquer ideia de aposta com os resultados reais, sem trapaça: cada "
+                                 "estratégia só enxerga os concursos anteriores ao que está apostando.\n\n"
+                                 "- Teste cego: esconde os últimos concursos, aposta em todos de uma vez e grava uma "
+                                 "impressão digital das apostas antes de revelar os resultados.\n"
+                                 "- Teste contínuo: aposta concurso a concurso e inclui o 'aprende com erros e "
+                                 "acertos' (Hedge).\n"
+                                 "- Registrar: grava apostas para o próximo sorteio, que ainda não aconteceu. Confira "
+                                 "depois que o resultado sair.\n\n"
+                                 "O valor-p ajustado desconta o fato de testar várias ideias ao mesmo tempo: só "
+                                 "abaixo de 0,05 a diferença é real e não sorte.")
+
+    def _lab_params(self):
+        jogo = self.jogo.get()
+        est = [n for n, v in self.l_est.items() if v.get()]
+        minha = None
+        if "minha aposta" in est:
+            minha = lab.minha_aposta(jogo, self.l_minha.get())
+        if not est:
+            raise ValueError("Escolha pelo menos uma estratégia.")
+        return jogo, est, minha
+
+    def run_lab(self):
+        try:
+            jogo, est, minha = self._lab_params()
+        except ValueError as e:
+            messagebox.showerror("Laboratório", str(e))
+            return
+        n, cego = self.l_n.get(), self.l_modo.current() == 0
+        fn = lab.teste_cego if cego else lab.teste_continuo
+        self.bg_lab(lambda: lab.texto_resultado(fn(jogo, n, est, minha)))
+
+    def reg_lab(self):
+        try:
+            jogo, est, minha = self._lab_params()
+        except ValueError as e:
+            messagebox.showerror("Laboratório", str(e))
+            return
+        self.bg_lab(lambda: lab.registrar_proximo(self.user, jogo, est, minha))
+
+    def bg_lab(self, fn):
+        self.l_out.delete("1.0", "end")
+        self.l_out.insert("end", "Calculando...")
+
+        def f():
+            try:
+                t = fn()
+            except Exception as e:
+                log.exception("laboratório")
+                t = f"ERRO: {e}"
+            self.after(0, lambda: (self.l_out.delete("1.0", "end"), self.l_out.insert("end", t)))
+        threading.Thread(target=f, daemon=True).start()
 
     def bg_otim(self, fn):
         self.o_out.delete("1.0", "end")

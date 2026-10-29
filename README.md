@@ -20,6 +20,7 @@ O Windows pode mostrar o aviso "O Windows protegeu o computador", porque o execu
 | **Retorno** | Quanto cada jogo devolve em média agora, e alertas quando o prêmio acumulado melhora o retorno |
 | **Planejamento** | Simulação de anos de apostas e histórico do retorno |
 | **Otimizador** | Escolhe o jogo e o formato (cartões simples, bolão ou fechamento) para o seu orçamento. Também tem risco de ruína, teste no passado, auditoria de aleatoriedade e previsão do acumulado |
+| **Laboratório** | Testa qualquer estratégia (inclusive a sua aposta) com os resultados reais, às cegas: teste cego com impressão digital das apostas, teste contínuo com "aprende com erros e acertos", e registro de apostas para sorteios que ainda não aconteceram |
 | **Banca** | Gastos, prêmios e limite mensal |
 | **Harness IA** | Chat com um modelo local que recebe as contas do app como contexto |
 
@@ -69,6 +70,7 @@ python luckharness.py
 |---|---|
 | `core.py` | Dados (API da Caixa com espelho de reserva), banco SQLite, login, estatística, conferência, fechamento e alertas |
 | `otimizador.py` | Probabilidades exatas, otimizador, cartões espalhados, modelo de popularidade, teste no passado, risco de ruína, auditoria e previsão |
+| `laboratorio.py` | Laboratório de estratégias: testes cegos, teste contínuo e registros para sorteios futuros |
 | `luckharness.py` | Interface Tkinter |
 | `tests/` | Testes pytest, incluindo a abertura de todas as abas |
 
