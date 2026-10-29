@@ -5,7 +5,7 @@ o jogo e a estrutura da aposta (chance de prêmio por real), a cobertura entre c
 repetidos = mais chance de pelo menos um premiar) e a popularidade (números pouco jogados dividem
 menos o prêmio). O modelo de popularidade aprende com o número real de ganhadores de cada concurso.
 """
-import json, math, os, random, re
+import json, math, os, random, re, threading
 
 from collections import Counter
 
@@ -313,7 +313,7 @@ def comparar_cobertura(jogo, k, n=None, n_sim=20000, seed=7):
     N, _, mn = JOGOS[jogo][:3]
     n = n or mn
     rng = random.Random(seed)
-    esp = cartoes_espalhados(jogo, k, n, pesos_popularidade(jogo), rng)
+    esp = sugestoes(jogo, k, n, rng)   # mesma fonte do "Sugerir apostas"
     if jogo == "supersete":
         aleat = [[rng.randrange(10) for _ in range(7)] for _ in range(k)]
     else:
@@ -764,25 +764,31 @@ def texto_acumulados(r):
 
 # ---------------- treino automático ----------------
 _treinados = {}   # jogo -> último concurso com que o modelo foi treinado nesta sessão
+_trava_treino = threading.Lock()   # atualização automática e "Baixar resultados" podem chamar ao mesmo tempo
 
 
 def treinar_todos(avisar=print, forcar=False):
     """Retreina a popularidade dos jogos que ganharam concursos novos (roda depois de baixar resultados).
-    Jogos sem novidade são pulados: evita treinar duas vezes seguidas com os mesmos dados."""
+    Jogos sem novidade são pulados, inclusive entre aberturas do app (o modelo guarda o último concurso usado).
+    Uma trava impede dois treinos simultâneos: o segundo espera e depois pula o que o primeiro já fez."""
     from core import last_concurso
     ok = []
-    for j in POP_JOGOS:
-        ultimo = last_concurso(j)
-        if not forcar and _treinados.get(j) == ultimo and _modelo(j):
-            continue
-        try:
-            m = treinar_popularidade(j)
-            _treinados[j] = ultimo
-            ok.append(f"{j} {'ok' if m['confiavel'] else 'sem padrão'} ({m['r2_teste']:.0%})")
-        except ValueError as e:
-            log.info("popularidade %s: %s", j, e)
-        except Exception:
-            log.warning("popularidade %s falhou", j, exc_info=True)
+    with _trava_treino:
+        for j in POP_JOGOS:
+            ultimo = last_concurso(j)
+            m = _modelo(j)
+            if not forcar and m and ultimo in (_treinados.get(j), m.get("ultimo_concurso")):
+                continue
+            try:
+                m = treinar_popularidade(j)
+                _treinados[j] = ultimo
+                with open(_pop_path(j), "w", encoding="utf8") as f:
+                    json.dump({**m, "ultimo_concurso": ultimo}, f)
+                ok.append(f"{j} {'ok' if m['confiavel'] else 'sem padrão'} ({m['r2_teste']:.0%})")
+            except ValueError as e:
+                log.info("popularidade %s: %s", j, e)
+            except Exception:
+                log.warning("popularidade %s falhou", j, exc_info=True)
     if ok:
         avisar("Modelo de popularidade atualizado: " + ", ".join(ok))
     return ok
@@ -1138,8 +1144,26 @@ def texto_previsao(prev):
 def sugestoes(jogo, qtd=5, n=None, rng=None):
     """Única fonte de apostas sugeridas do app (aba Análise, Otimizador e IA): cartões espalhados e, com modelo
     de popularidade confiável, com os números menos jogados. Nenhum número 'quente' ou 'atrasado': o
-    Laboratório mostrou que isso não acerta mais que o acaso."""
-    return cartoes_espalhados(jogo, qtd, n, pesos_popularidade(jogo), rng or random)
+    Laboratório mostrou que isso não acerta mais que o acaso.
+    Com modelo de popularidade, gera vários conjuntos igualmente espalhados e fica com o que divide menos o
+    prêmio (média e pior cartão): espalhar decide a cobertura, a popularidade decide entre os empates."""
+    rng = rng or random
+    pesos = pesos_popularidade(jogo)
+    if not pesos or jogo == "supersete":
+        return cartoes_espalhados(jogo, qtd, n, pesos, rng)
+    m = _modelo(jogo)
+    ant = m.get("anterior", [])
+    melhor, nota_melhor = None, None
+    for _ in range(TENTATIVAS_SUGESTAO):
+        cs = cartoes_espalhados(jogo, qtd, n, pesos, rng)
+        fs = [_prever(jogo, m, {"dz": c, "ant": ant, "trevos": []}) for c in cs]
+        nota = (sum(fs) / len(fs), max(fs))
+        if nota_melhor is None or nota < nota_melhor:
+            melhor, nota_melhor = cs, nota
+    return melhor
+
+
+TENTATIVAS_SUGESTAO = 60
 
 
 TESTADO_NAO_FUNCIONA = (

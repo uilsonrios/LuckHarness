@@ -1,6 +1,7 @@
 """App, Otimizador e IA precisam dizer a mesma coisa."""
 import io
 import json
+import os
 import random
 
 import core
@@ -8,8 +9,8 @@ import otimizador as o
 
 
 def test_sugestoes_sao_as_mesmas_do_otimizador():
-    a = o.sugestoes("lotofacil", 5, 15, random.Random(3))
-    b = o.cartoes_espalhados("lotofacil", 5, 15, o.pesos_popularidade("lotofacil"), random.Random(3))
+    a = o.sugestoes("lotofacil", 5, 15, random.Random(7))
+    b = o.comparar_cobertura("lotofacil", 5, 15, n_sim=10, seed=7)[0]   # o Otimizador usa a mesma função
     assert a == b
     assert not hasattr(core, "suggest")   # a sugestão antiga (quentes/atrasadas) não existe mais
 
@@ -83,6 +84,7 @@ def test_treinar_todos_pula_jogo_sem_novidade(monkeypatch):
                         lambda j: chamadas.append(j) or {"confiavel": True, "r2_teste": 0.5})
     monkeypatch.setattr(o, "_modelo", lambda j: {"ok": 1})
     monkeypatch.setattr(o, "_treinados", {})
+    monkeypatch.setattr(o, "_pop_path", lambda j: os.devnull)   # não grava modelo falso de verdade
     o.treinar_todos(lambda t: None)
     n = len(chamadas)
     o.treinar_todos(lambda t: None)          # nada mudou: não treina de novo
@@ -96,3 +98,39 @@ def test_avaliar_aposta_usa_modelo_quando_ha():
     sem = core.avaliar_aposta("megasena", [1, 2, 3, 4, 5, 6], [], r={"ev": 1, "retorno": .2})[0]
     assert "modelo treinado" in com and "/100" not in com
     assert "regras simples" in sem
+
+
+def test_sugestoes_preferem_conjunto_que_divide_menos(monkeypatch):
+    """Com modelo de popularidade, entre conjuntos igualmente espalhados fica o que divide menos o prêmio."""
+    N = 25
+    pesos = {i: (0.05 if i <= 12 else -0.05) for i in range(1, N + 1)}
+    mod = {"confiavel": True, "pesos": {str(k): v for k, v in pesos.items()}, "coef": [pesos[i] for i in range(1, N + 1)],
+           "cfg": {"padroes": False, "modelo": "ridge"}, "norm": ([], []), "D": N, "anterior": []}
+    monkeypatch.setattr(o, "_modelo", lambda j: mod)
+    sug = o.sugestoes("lotofacil", 5, 15, random.Random(1))
+    media = lambda cs: sum(o._prever("lotofacil", mod, {"dz": c, "ant": [], "trevos": []}) for c in cs) / len(cs)
+    um_so = o.cartoes_espalhados("lotofacil", 5, 15, pesos, random.Random(1))
+    assert media(sug) <= media(um_so)
+    uso = [sum(x in c for c in sug) for x in range(1, N + 1)]
+    assert max(uso) - min(uso) <= 1          # continua espalhado
+
+
+def test_treino_simultaneo_nao_repete(monkeypatch):
+    import threading
+    import time
+    chamadas = []
+
+    def lento(j):
+        chamadas.append(j)
+        time.sleep(0.01)
+        return {"confiavel": True, "r2_teste": 0.5}
+    monkeypatch.setattr(o, "treinar_popularidade", lento)
+    monkeypatch.setattr(o, "_treinados", {})
+    monkeypatch.setattr(o, "_modelo", lambda j: {"ok": 1})
+    monkeypatch.setattr(o, "_pop_path", lambda j: os.devnull)
+    ts = [threading.Thread(target=o.treinar_todos, args=(lambda t: None,)) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len(chamadas) == len(set(chamadas))   # cada jogo treinado uma vez só
