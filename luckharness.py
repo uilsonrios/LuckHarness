@@ -547,7 +547,7 @@ class App(tk.Tk):
             self.otim_cards = [(j, c, t) for c, t in zip(cards, extras)]
             linhas = [texto_plano(orc, obj, rk), "", f"Cartões sugeridos ({j}):"]
             for i, (c, t) in enumerate(zip(cards, extras), 1):
-                fd = fator_divisao(j, c)
+                fd = fator_divisao(j, c, t if j == "maismilionaria" else ())
                 linhas.append(f"  {i:>2}. {fmt_bet(j, c, t)}" + (f"   divisão do prêmio: {fd:.2f}x a média"
                                                                    if fd else ""))
             if p_esp is not None:
@@ -660,7 +660,7 @@ class App(tk.Tk):
             return
         def f():
             txt = avaliar_aposta(jogo, nums, trevos)[0]
-            fd = fator_divisao(jogo, nums)
+            fd = fator_divisao(jogo, nums, trevos if jogo == "maismilionaria" else ())
             return txt + (f"\nModelo de popularidade: quem acertar esta aposta divide o prêmio com {fd:.2f}x a "
                           "média de ganhadores." if fd else "")
         self.bg_ret(f)

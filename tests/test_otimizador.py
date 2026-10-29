@@ -128,7 +128,34 @@ def test_v2_aprende_padrao_de_escolha():
             c.execute("INSERT INTO draws(jogo, concurso, dezenas, meta) VALUES(?,?,?,?)",
                       ("megasena", i + 1, json.dumps(dz), json.dumps(meta)))
     m = o.treinar_popularidade("megasena")
-    assert m["versao"] == "v2" and m["r2_v2"] > m["r2_v1"] + 0.2
+    assert m["cfg"]["padroes"] and m["r2_teste"] > m["r2_base"] + 0.2
     assert o.fator_divisao("megasena", [1, 2, 3, 4, 5, 6]) > o.fator_divisao("megasena", [3, 14, 25, 36, 47, 58])
     r = o.estudo_acumulados("megasena")
     assert r["casos"] == []   # sem ganhadores da sena nos dados sintéticos
+
+
+def test_popularidade_supersete_e_maismilionaria():
+    """Jogos novos no modelo: Super Sete (coluna x dígito) e +Milionária (números + trevos)."""
+    rng = random.Random(9)
+    with core.db() as c:
+        c.execute("DELETE FROM draws WHERE jogo IN ('supersete', 'maismilionaria')")
+        for i in range(800):
+            ss = [rng.randrange(10) for _ in range(7)]
+            g = 10_000 * pow(2.718281828, 0.3 * (ss[0] == 7) + rng.gauss(0, 0.05))
+            meta = {"premios": [["3 acertos", 5]], "ganhadores": [int(g)], "arrecadado": 2.5 * 10_000 / 0.0081}
+            c.execute("INSERT INTO draws(jogo, concurso, dezenas, meta) VALUES(?,?,?,?)",
+                      ("supersete", i + 1, json.dumps(ss), json.dumps(meta)))
+            mm = sorted(rng.sample(range(1, 51), 6))
+            tv = sorted(rng.sample(range(1, 7), 2))
+            g = 50_000 * pow(2.718281828, 0.3 * (1 in tv) + rng.gauss(0, 0.05))
+            meta = {"premios": [["2 acertos + 1 trevo", 6]], "ganhadores": [int(g)], "trevos": tv,
+                    "arrecadado": 6.0 * 50_000 / (0.1 * 8 / 15)}
+            c.execute("INSERT INTO draws(jogo, concurso, dezenas, meta) VALUES(?,?,?,?)",
+                      ("maismilionaria", i + 1, json.dumps(mm), json.dumps(meta)))
+    m = o.treinar_popularidade("supersete", rapido=True)
+    assert m["confiavel"]
+    assert o.fator_divisao("supersete", [7, 0, 0, 0, 0, 0, 0]) > o.fator_divisao("supersete", [3, 0, 0, 0, 0, 0, 0])
+    m = o.treinar_popularidade("maismilionaria", rapido=True)
+    assert m["confiavel"]
+    assert (o.fator_divisao("maismilionaria", [1, 2, 3, 4, 5, 6], [1, 2]) >
+            o.fator_divisao("maismilionaria", [1, 2, 3, 4, 5, 6], [3, 4]))
