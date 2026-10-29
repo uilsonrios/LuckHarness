@@ -1196,8 +1196,9 @@ def fatos_app(jogo):
         pass
     m = _modelo(jogo)
     if m:
-        linhas.append(f"- Modelo de popularidade: nota {m['r2_teste']:.0%} em concursos não vistos "
-                      f"({'usado' if m.get('confiavel') else 'não confiável, não usado'}).")
+        linhas.append(f"- Modelo de popularidade: acerta {m['r2_teste']:.0%} ao prever, em concursos não vistos, "
+                      "se a combinação sorteada era muito ou pouco jogada (é a nota do modelo, NÃO a popularidade de "
+                      f"um cartão; {'usado' if m.get('confiavel') else 'não confiável, não usado'}).")
     melhores = sorted(JOGOS, key=lambda j: -prob_premio(j) / JOGOS[j][4])[:3]
     linhas += [f"- Mais fáceis de premiar por real: {', '.join(melhores)}.", "- " + TESTADO_NAO_FUNCIONA,
                "- " + TESTADO_FUNCIONA]
@@ -1226,9 +1227,30 @@ _ALERTA_OK = {0: r"popular|p[úu]blico|(mais|menos|muito|pouco) jogad",
               3: r"condicional|fechamento|se .{0,40}\bsa[íi]rem\b"}
 
 
-def checar_resposta(texto, jogo, permitidos=()):
-    """Confere a resposta da IA contra o que o app testou. Devolve avisos (vazio se estiver tudo certo)."""
+def fatos_sugestoes(jogo, cartoes):
+    """Cartões sugeridos já ordenados pelo app, com o melhor definido: a IA explica, não compara números
+    (modelos pequenos erram comparações, ex.: chamar 1,08x de 'divide menos')."""
+    fs = [(c, fator_divisao(jogo, c)) for c in cartoes]
+    if not all(f for _, f in fs):
+        return "Apostas sugeridas agora pelo app (cartões espalhados; todas com a mesma chance):\n" + "\n".join(
+            f"  {' '.join(f'{x:02d}' for x in c)}" for c, _ in fs)
+    fs.sort(key=lambda t: t[1])
+    linhas = ["Apostas sugeridas agora pelo app, JÁ ORDENADAS da que divide MENOS o prêmio para a que divide MAIS "
+              "(todas têm exatamente a mesma chance de acerto e o mesmo valor esperado):"]
+    for i, (c, f) in enumerate(fs, 1):
+        rot = "abaixo da média: divide MENOS" if f < 1 else "acima da média: divide MAIS"
+        linhas.append(f"  {i}. {' '.join(f'{x:02d}' for x in c)} | {f:.2f}x ({rot})")
+    melhor = fs[0]
+    linhas.append(f"MELHOR CARTÃO (decidido pelo app; recomende este se perguntarem): "
+                  f"{' '.join(f'{x:02d}' for x in melhor[0])} ({melhor[1]:.2f}x).")
+    return "\n".join(linhas)
+
+
+def checar_resposta(texto, jogo, permitidos=(), sugestoes=None):
+    """Confere a resposta da IA contra o que o app testou. Devolve avisos (vazio se estiver tudo certo).
+    sugestoes: [(cartão, fator de divisão)] para conferir se a IA recomendou o cartão certo."""
     avisos = []
+    texto = re.sub(r"\d+[.,]\d+", " ", texto)   # 1,08x / 8.77% não são números de aposta
     # frase a frase: "números quentes NÃO funcionam" é a resposta certa, não uma contradição
     # itens de lista sob um título negado ("Sem efeito:" / "**Testado e sem efeito**") herdam a negação
     herda = False
@@ -1257,6 +1279,25 @@ def checar_resposta(texto, jogo, permitidos=()):
         if len(set(nums)) >= max(5, mn - 1) and not any(set(nums) <= set(p) or set(p) <= set(nums) for p in ok):
             avisos.append("sugeriu números que não vieram do app: use as apostas geradas pelo Otimizador.")
             break
+    # recomendou o cartão que divide mais?
+    fs = [(set(c), f) for c, f in (sugestoes or []) if f]
+    if fs:
+        melhor_c, melhor_f = min(fs, key=lambda t: t[1])
+        linhas = texto.lower().splitlines()
+        for i, linha in enumerate(linhas):
+            if not re.search(r"recomend|melhor (escolha|aposta|cart)|aposte\b", linha):
+                continue
+            trecho = " ".join(linhas[i:i + 3])
+            seq = [int(x) for x in re.findall(r"\b\d{1,2}\b", trecho)]
+            # só o PRIMEIRO cartão citado depois da palavra é a recomendação; os seguintes são "outras opções"
+            achados = [(p, c, f) for c, f in fs for p in range(len(seq))
+                       if set(seq[p:p + len(c)]) == c]
+            if achados:
+                _, c, f = min(achados, key=lambda t: t[0])
+                if f > melhor_f + 0.02:
+                    avisos.append(f"recomendou o cartão que divide MAIS o prêmio ({f:.2f}x); o melhor é "
+                                  f"{' '.join(f'{x:02d}' for x in sorted(melhor_c))} ({melhor_f:.2f}x).")
+                    break
     return list(dict.fromkeys(avisos))
 
 

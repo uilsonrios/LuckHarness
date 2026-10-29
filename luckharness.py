@@ -1323,11 +1323,8 @@ class App(tk.Tk):
         if self.last_sugs:
             j0 = self.last_sugs[0][0]
             ev = valor_esperado(j0)
-            partes.append(corta("Apostas sugeridas agora pelo app (cartões espalhados):\n" + "\n".join(
-                f"  {fmt_bet(j, a, [])}" + (f" | divisão do prêmio {fd:.2f}x a média"
-                                            if (fd := fator_divisao(j, a)) else "")
-                for j, a in self.last_sugs[:6]) + f"\nCada uma: custo {brl(JOGOS[j0][4])}, retorno {ev['retorno']:.0%}.",
-                "sugestoes"))
+            partes.append(corta(fatos_sugestoes(j0, [a for _, a in self.last_sugs[:6]])
+                                + f"\nCada uma: custo {brl(JOGOS[j0][4])}, retorno {ev['retorno']:.0%}.", "sugestoes"))
         if self.ev_txt:
             partes.append(corta(self.ev_txt, "retorno"))
         if self.otim_txt:
@@ -1347,8 +1344,14 @@ class App(tk.Tk):
         self.chat.see("end")
         msgs = load_chat(self.user, 6) + [{"role": "user", "content": f"{q}\n\nContexto:\n{self.context()}"}]
         jogo = self.jogo.get()
-        permitidos = ([a for _, a in self.last_sugs] + [c for _, c, _ in self.otim_cards]
-                      + [b["dezenas"] for b in self.bets])
+        # números que vieram do app: sugestões (atuais e anteriores), Otimizador, apostas salvas e o que o próprio
+        # usuário citou na pergunta (ex.: uma sugestão antiga)
+        self.sugs_vistas = getattr(self, "sugs_vistas", []) + [a for _, a in self.last_sugs]
+        N = JOGOS[self.jogo.get()][0]
+        da_pergunta = [int(x) for x in re.findall(r"\b\d{1,2}\b", q) if 1 <= int(x) <= N]
+        permitidos = (self.sugs_vistas + [c for _, c, _ in self.otim_cards] + [b["dezenas"] for b in self.bets]
+                      + ([da_pergunta] if da_pergunta else []))
+        sugs_fator = [(a, fator_divisao(j, a)) for j, a in self.last_sugs]
         save_chat(self.user, "user", q)
         cb = lambda t: self.after(0, lambda: (self.chat.insert("end", t), self.chat.see("end")))
 
@@ -1356,7 +1359,7 @@ class App(tk.Tk):
             try:
                 resp = ask_ollama(self.model, msgs, cb)
                 save_chat(self.user, "assistant", resp)
-                avisos = checar_resposta(resp, jogo, permitidos)
+                avisos = checar_resposta(resp, jogo, permitidos, sugs_fator)
                 if avisos:
                     cb("\n\n[Aviso do LuckHarness: a resposta acima contradiz o que o app testou]\n"
                        + "\n".join(f"- A IA {a}" for a in avisos))

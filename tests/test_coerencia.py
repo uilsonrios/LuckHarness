@@ -134,3 +134,36 @@ def test_treino_simultaneo_nao_repete(monkeypatch):
     for t in ts:
         t.join()
     assert len(chamadas) == len(set(chamadas))   # cada jogo treinado uma vez só
+
+
+SUGS = [([1, 2, 3, 8, 10, 12, 16, 17, 18, 19, 20, 21, 23, 24, 25], 0.86),
+        ([3, 4, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 25], 0.78),
+        ([1, 2, 5, 7, 8, 10, 13, 14, 15, 18, 21, 22, 23, 24, 25], 1.08)]
+
+
+def test_checagem_pega_recomendacao_do_cartao_que_divide_mais():
+    resp = ("Qual é a melhor escolha?\n> Recomendação final: Aposte **01 02 05 07 08 10 13 14 15 18 21 22 23 24 25**\n"
+            "Tem divisão do prêmio de 1,08x a média.")
+    av = o.checar_resposta(resp, "lotofacil", [c for c, _ in SUGS], SUGS)
+    assert any("divide MAIS" in a and "03 04 06 09" in a for a in av)
+
+
+def test_checagem_aceita_recomendacao_certa_e_cartao_antigo_citado():
+    resp = ("A melhor escolha é 03 04 06 09 10 11 12 13 14 15 16 17 19 20 25, com 0,78x.\n"
+            "Sobre a sua aposta 01 02 04 06 11 12 13 14 16 17 18 20 21 22 23: mesma chance de acerto.")
+    antiga = [1, 2, 4, 6, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23]
+    assert o.checar_resposta(resp, "lotofacil", [c for c, _ in SUGS] + [antiga], SUGS) == []
+
+
+def test_fatos_sugestoes_ja_ordenados(monkeypatch):
+    fat = {tuple(c): f for c, f in SUGS}
+    monkeypatch.setattr(o, "fator_divisao", lambda j, c, t=(): fat[tuple(c)])
+    txt = o.fatos_sugestoes("lotofacil", [c for c, _ in SUGS])
+    assert txt.index("0.78x") < txt.index("0.86x") < txt.index("1.08x")
+    assert "MELHOR CARTÃO" in txt and "03 04 06 09 10 11 12 13 14 15 16 17 19 20 25 (0.78x)" in txt
+
+
+def test_checagem_olha_so_o_primeiro_cartao_recomendado():
+    resp = ("Recomendo 03 04 06 09 10 11 12 13 14 15 16 17 19 20 25.\n"
+            "Outras sugestões: 01 02 05 07 08 10 13 14 15 18 21 22 23 24 25.")
+    assert o.checar_resposta(resp, "lotofacil", [c for c, _ in SUGS], SUGS) == []
