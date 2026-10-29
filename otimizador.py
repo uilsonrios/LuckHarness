@@ -763,12 +763,21 @@ def texto_acumulados(r):
 
 
 # ---------------- treino automático ----------------
-def treinar_todos(avisar=print):
-    """Retreina a popularidade de todos os jogos (roda depois de baixar resultados)."""
+_treinados = {}   # jogo -> último concurso com que o modelo foi treinado nesta sessão
+
+
+def treinar_todos(avisar=print, forcar=False):
+    """Retreina a popularidade dos jogos que ganharam concursos novos (roda depois de baixar resultados).
+    Jogos sem novidade são pulados: evita treinar duas vezes seguidas com os mesmos dados."""
+    from core import last_concurso
     ok = []
     for j in POP_JOGOS:
+        ultimo = last_concurso(j)
+        if not forcar and _treinados.get(j) == ultimo and _modelo(j):
+            continue
         try:
             m = treinar_popularidade(j)
+            _treinados[j] = ultimo
             ok.append(f"{j} {'ok' if m['confiavel'] else 'sem padrão'} ({m['r2_teste']:.0%})")
         except ValueError as e:
             log.info("popularidade %s: %s", j, e)
@@ -1205,3 +1214,23 @@ def checar_resposta(texto, jogo, permitidos=()):
             avisos.append("sugeriu números que não vieram do app: use as apostas geradas pelo Otimizador.")
             break
     return list(dict.fromkeys(avisos))
+
+
+def texto_chances_cartoes(jogo, cartoes, n_sim=20000):
+    """Chance de cada faixa por cartão (exata) e do conjunto de cartões (simulada; a principal é exata)."""
+    fx = sorted(h for h in JOGOS[jogo][3] if h > 0)
+    um = lambda p: (f"{p:.1%}" if p >= .05 else "1 em " + f"{1 / p:,.0f}".replace(",", ".")) if p else "-"
+    n = len(cartoes[0])
+    out = ["Chances de cada cartão (são iguais para qualquer cartão; nenhuma escolha de números muda isso):",
+           "  " + " | ".join(f"{h} acertos: {um(prob_faixa(jogo, h, n))}" for h in reversed(fx))]
+    p1 = prob_premio(jogo, n, extra=False)
+    if p1 * len(cartoes) < 0.05:
+        # chance pequena: a simulação teria poucos casos; com cartões espalhados a conta direta é precisa
+        p_conj = 1 - (1 - p1) ** len(cartoes)
+    else:
+        p_conj = simular_cobertura(jogo, cartoes, n_sim, random.Random(11))
+    top = prob_faixa(jogo, max(fx), n) * len({tuple(c) for c in cartoes})
+    out += [f"Com os {len(cartoes)} cartões juntos, por concurso:",
+            f"  algum prêmio: {um(p_conj)} (um cartão sozinho: {um(p1)})",
+            f"  prêmio principal ({max(fx)} acertos): {um(top)}"]
+    return "\n".join(out)

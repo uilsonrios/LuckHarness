@@ -63,3 +63,36 @@ def test_checagem_aceita_explicacao_que_nega():
     t = ("O app testou números quentes, frios e redes neurais e não encontrou efeito. "
          "Mesmo usando números quentes, o retorno esperado é negativo. Não há números que estão para sair.")
     assert o.checar_resposta(t, "lotofacil") == []
+
+
+def test_ollama_mostra_motivo_do_erro(monkeypatch):
+    import urllib.error
+
+    def recusa(req, timeout=None):
+        raise urllib.error.HTTPError("u", 400, "Bad Request", {},
+                                     io.BytesIO(b'{"error":"request exceeds the available context size"}'))
+    monkeypatch.setattr(core.urllib.request, "urlopen", recusa)
+    import pytest
+    with pytest.raises(RuntimeError, match="memória de contexto"):
+        core.ask_ollama("m", [{"role": "user", "content": "x"}], lambda t: None)
+
+
+def test_treinar_todos_pula_jogo_sem_novidade(monkeypatch):
+    chamadas = []
+    monkeypatch.setattr(o, "treinar_popularidade",
+                        lambda j: chamadas.append(j) or {"confiavel": True, "r2_teste": 0.5})
+    monkeypatch.setattr(o, "_modelo", lambda j: {"ok": 1})
+    monkeypatch.setattr(o, "_treinados", {})
+    o.treinar_todos(lambda t: None)
+    n = len(chamadas)
+    o.treinar_todos(lambda t: None)          # nada mudou: não treina de novo
+    assert n > 0 and len(chamadas) == n
+    o.treinar_todos(lambda t: None, forcar=True)
+    assert len(chamadas) == 2 * n
+
+
+def test_avaliar_aposta_usa_modelo_quando_ha():
+    com = core.avaliar_aposta("megasena", [1, 2, 3, 4, 5, 6], [], r={"ev": 1, "retorno": .2}, fator=0.8)[0]
+    sem = core.avaliar_aposta("megasena", [1, 2, 3, 4, 5, 6], [], r={"ev": 1, "retorno": .2})[0]
+    assert "modelo treinado" in com and "/100" not in com
+    assert "regras simples" in sem

@@ -738,10 +738,8 @@ class App(tk.Tk):
             messagebox.showerror("Aposta inválida", str(e))
             return
         def f():
-            txt = avaliar_aposta(jogo, nums, trevos)[0]
             fd = fator_divisao(jogo, nums, trevos if jogo == "maismilionaria" else ())
-            return txt + (f"\nModelo de popularidade: quem acertar esta aposta divide o prêmio com {fd:.2f}x a "
-                          "média de ganhadores." if fd else "")
+            return avaliar_aposta(jogo, nums, trevos, fator=fd)[0]
         self.bg_ret(f)
 
     def sim_bolao(self):
@@ -942,11 +940,12 @@ class App(tk.Tk):
         """Lê a tela na thread principal; as tarefas em background recebem só os valores."""
         return self.jogo.get(), self.n.get(), self.bet.get()
 
-    def _analysis(self, jogo, n, bet):
+    def _analysis(self, jogo, n, bet, aviso=True):
         draws = load_draws(jogo, n)
         if not draws:
             raise RuntimeError("Sem dados. Clique em 'Baixar resultados'.")
-        self.log("Analisando e treinando o modelo...", "head")
+        if aviso:
+            self.log("Analisando e treinando o modelo...", "head")
         if jogo == "supersete":
             rep, cols = analyze_ss(draws)
             self.dados = {"jogo": jogo, "cols": cols}
@@ -970,14 +969,18 @@ class App(tk.Tk):
         p = self._params()
 
         def f():
-            self._analysis(*p)
+            self.log("Gerando apostas sugeridas...", "head")
+            self._analysis(*p, aviso=False)
             jogo, s = self.dados["jogo"], self.dados
             self.log("\nApostas sugeridas (as mesmas do Otimizador: cartões espalhados e, com o modelo de "
                      "popularidade, números pouco jogados):", "head")
             sugs = sugestoes(jogo, 5, p[2] if jogo != "supersete" else None)
             self.last_sugs = [(jogo, a) for a in sugs]
             for a in sugs:
-                self.log("  " + fmt_bet(jogo, a, []) + f"   (popularidade {popularidade(jogo, a)[0]}/100)")
+                fd = fator_divisao(jogo, a)
+                self.log("  " + fmt_bet(jogo, a, []) + (f"   (se ganhar, divide com {fd:.2f}x a média de ganhadores)"
+                                                        if fd else ""))
+            self.log(texto_chances_cartoes(jogo, sugs))
             ev = valor_esperado(jogo)
             self.ev_txt = texto_ev(ev)
             c = custo(jogo, sugs[0], [])
@@ -1302,21 +1305,35 @@ class App(tk.Tk):
                 c.execute("DELETE FROM chats WHERE user=?", (self.user,))
             self.chat.delete("1.0", "end")
 
+    # limite de caracteres de cada parte do contexto da IA (~4 caracteres por token; cabe em num_ctx=8192
+    # junto com o sistema, o histórico e a resposta)
+    CTX_LIMITES = {"fatos": 2000, "analise": 2500, "apostas": 1200, "sugestoes": 1800, "retorno": 1500,
+                   "plano": 2500, "ranking": 1000}
+
     def context(self):
-        partes = [fatos_app(self.jogo.get()), self.last_report or "(nenhuma análise ainda)"]
+        L = self.CTX_LIMITES
+        corta = lambda t, k: t if len(t) <= L[k] else t[:L[k]] + "\n[...resumido]"
+        partes = [corta(fatos_app(self.jogo.get()), "fatos"),
+                  corta(self.last_report or "(nenhuma análise ainda)", "analise")]
         if self.bets:
-            partes.append("Apostas salvas:\n" + "\n".join(
+            partes.append(corta("Apostas salvas:\n" + "\n".join(
                 f"  #{b['id']} {b['jogo']} {fmt_bet(b['jogo'], b['dezenas'], b['trevos'])} | conferida em "
-                f"{b['conferidos']} | melhor {b['melhor']} | prêmios {brl(b['ganhos'])}" for b in self.bets[:15]))
+                f"{b['conferidos']} | melhor {b['melhor']} | prêmios {brl(b['ganhos'])}" for b in self.bets[:10]),
+                "apostas"))
         if self.last_sugs:
-            partes.append("Apostas sugeridas agora (contas feitas pelo app):\n" + "\n\n".join(
-                avaliar_aposta(j, a, [])[0] for j, a in self.last_sugs[:6]))
+            j0 = self.last_sugs[0][0]
+            ev = valor_esperado(j0)
+            partes.append(corta("Apostas sugeridas agora pelo app (cartões espalhados):\n" + "\n".join(
+                f"  {fmt_bet(j, a, [])}" + (f" | divisão do prêmio {fd:.2f}x a média"
+                                            if (fd := fator_divisao(j, a)) else "")
+                for j, a in self.last_sugs[:6]) + f"\nCada uma: custo {brl(JOGOS[j0][4])}, retorno {ev['retorno']:.0%}.",
+                "sugestoes"))
         if self.ev_txt:
-            partes.append(self.ev_txt)
+            partes.append(corta(self.ev_txt, "retorno"))
         if self.otim_txt:
-            partes.append("Plano do Otimizador:\n" + self.otim_txt)
+            partes.append(corta("Plano do Otimizador:\n" + self.otim_txt, "plano"))
         if self.ranking:
-            partes.append(self.ranking)
+            partes.append(corta(self.ranking, "ranking"))
         g, p = banca_mes(self.user)
         lim = load_prefs().get(f"limite_{self.user}") or 0
         partes.append(f"Banca do mês: gastos {brl(g)}, prêmios {brl(p)}, limite {brl(lim)}")

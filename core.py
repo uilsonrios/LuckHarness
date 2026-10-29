@@ -1,5 +1,5 @@
 """luckHarness core - dados, autenticação, estatística, modelo e IA (sem interface)."""
-import hashlib, json, logging, unicodedata, math, os, random, re, secrets, sqlite3, sys, urllib.request
+import hashlib, json, logging, unicodedata, math, os, random, re, secrets, sqlite3, sys, urllib.error, urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.11.0"
+__version__ = "1.11.1"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -513,7 +513,9 @@ def popularidade(jogo, nums):
     return min(100, score), motivos
 
 
-def avaliar_aposta(jogo, nums, trevos, r=None):
+def avaliar_aposta(jogo, nums, trevos, r=None, fator=None):
+    """Chances, custo e valor esperado da aposta. 'fator' = divisão do prêmio pelo modelo de popularidade
+    treinado; sem ele, usa as regras simples (datas, sequências, múltiplos)."""
     r = r or valor_esperado(jogo)
     N, K, mn, faixas, preco = JOGOS[jogo]
     n = len(nums)
@@ -526,9 +528,14 @@ def avaliar_aposta(jogo, nums, trevos, r=None):
         p = prob_faixa(jogo, h, n)
         if p:
             out.append(f"  P({h} acertos) = 1 em " + f"{1 / p:,.0f}".replace(",", "."))
-    out.append(f"Popularidade: {pop}/100 " + ("(boa: pouca chance de dividir prêmio)" if pop < 25 else
-                                              "(alta: se ganhar, tende a dividir com mais gente)"))
-    out += [f"  - {m}" for m in motivos]
+    if fator is not None:
+        out.append(f"Popularidade (modelo treinado): se ganhar, divide o prêmio com {fator:.2f}x a média de "
+                   "ganhadores " + ("(boa: pouco jogada)" if fator < 1 else "(jogada acima da média)"))
+    else:
+        out.append(f"Popularidade (regras simples): {pop}/100 " + (
+            "(boa: pouca chance de dividir prêmio)" if pop < 25 else
+            "(alta: se ganhar, tende a dividir com mais gente)"))
+        out += [f"  - {m}" for m in motivos]
     return "\n".join(out), pop
 
 
@@ -1174,11 +1181,22 @@ SYSTEM = ("Você é Harness IA, analista de loterias do LuckHarness. Responda em
 def ask_ollama(model, messages, on_chunk):
     # think=False: sem isso modelos de raciocínio passam minutos "pensando" antes de escrever a resposta
     # temperatura baixa: respostas consistentes, menos "criatividade" com números
-    body = json.dumps({"model": model, "stream": True, "think": False, "options": {"temperature": 0.2},
+    # num_ctx: o padrão do Ollama (4096 tokens) não cabe análise + sugestões + plano + fatos
+    body = json.dumps({"model": model, "stream": True, "think": False,
+                       "options": {"temperature": 0.2, "num_ctx": 8192},
                        "messages": [{"role": "system", "content": SYSTEM}] + messages}).encode()
     req = urllib.request.Request(OLLAMA_URL + "/api/chat", body, {"Content-Type": "application/json"})
     full = []
-    with urllib.request.urlopen(req, timeout=600) as r:
+    try:
+        resp = urllib.request.urlopen(req, timeout=600)
+    except urllib.error.HTTPError as e:
+        motivo = e.read().decode("utf8", "replace")
+        log.warning("Ollama %s: %s", e.code, motivo[:500])
+        if "context size" in motivo:
+            raise RuntimeError("a pergunta ficou maior que a memória de contexto do modelo. Clique em 'Limpar' "
+                               "no chat e tente de novo") from None
+        raise RuntimeError(f"o Ollama recusou o pedido (HTTP {e.code}): {motivo[:200]}") from None
+    with resp as r:
         for line in r:
             if line.strip():
                 t = json.loads(line).get("message", {}).get("content", "")

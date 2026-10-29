@@ -159,3 +159,12 @@ def test_popularidade_supersete_e_maismilionaria():
     assert m["confiavel"]
     assert (o.fator_divisao("maismilionaria", [1, 2, 3, 4, 5, 6], [1, 2]) >
             o.fator_divisao("maismilionaria", [1, 2, 3, 4, 5, 6], [3, 4]))
+
+
+def test_chances_dos_cartoes():
+    cards = [[1, 2, 3, 4, 7, 8, 10, 12, 14, 16, 17, 18, 20, 23, 24],
+             [2, 3, 4, 5, 6, 9, 11, 13, 14, 15, 18, 19, 21, 22, 25]]
+    t = o.texto_chances_cartoes("lotofacil", cards)
+    assert "15 acertos: 1 em 3.268.760" in t and "1 em 1.634.380" in t
+    m = o.texto_chances_cartoes("megasena", [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]])
+    assert "algum prêmio: 1 em 1.149" in m

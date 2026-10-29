@@ -71,3 +71,13 @@ def test_salvar_aposta_e_editar(app, monkeypatch):
 
 def test_contexto_da_ia_nao_quebra(app):
     assert "FATOS DO APP" in app.context()
+
+
+def test_contexto_da_ia_cabe_no_limite(app):
+    app.last_report = "x" * 50_000
+    app.otim_txt = "y" * 50_000
+    app.ev_txt = "z" * 50_000
+    app.ranking = "w" * 50_000
+    app.last_sugs = [("lotofacil", list(range(1, 16)))] * 6
+    ctx = app.context()
+    assert len(ctx) < sum(app.CTX_LIMITES.values()) + 3000   # ~4 caracteres por token: cabe em 8192 tokens
