@@ -14,7 +14,8 @@ O Windows pode mostrar o aviso "O Windows protegeu o computador", porque o execu
 
 | Aba | Para que serve |
 |---|---|
-| **Análise** | Frequência, atrasos e somas dos sorteios, e um modelo de aprendizado testado contra o acaso (mostra que não supera o acaso) |
+| **Minha aposta da semana** | Você diz quanto quer gastar e o app monta os cartões prontos, com a chance de cada faixa e o botão "Apostei" para registrar o gasto. Tem volante clicável e calendário de sorteios. No primeiro uso, um assistente pergunta o jogo, o orçamento e o limite do mês |
+| **Análise** | Frequência, atrasos e somas dos sorteios, quantos números se repetem do concurso anterior (real vs. acaso) e um modelo de aprendizado testado contra o acaso (mostra que não supera o acaso) |
 | **Minhas apostas** | Salva as apostas e confere sozinho com os resultados oficiais: dezenas, trevos, Time do Coração, Mês da Sorte e os dois sorteios da Dupla Sena |
 | **Fechamento** | Gera cartões com garantia, por exemplo "se 4 das minhas 15 saírem, um cartão faz 3". Uma busca local reduz o número de cartões |
 | **Retorno** | Quanto cada jogo devolve em média agora, e alertas quando o prêmio acumulado melhora o retorno |
@@ -26,7 +27,7 @@ O Windows pode mostrar o aviso "O Windows protegeu o computador", porque o execu
 
 ### Otimizador: o que dá para melhorar de verdade
 
-- **Escolha do jogo.** Com o mesmo dinheiro, a Lotofácil premia cerca de 245 vezes mais vezes que a Mega-Sena.
+- **Escolha do jogo.** Com o mesmo dinheiro, a Lotofácil premia cerca de 400 vezes mais vezes que a Mega-Sena, e o Dia de Sorte (contando o Mês da Sorte) cerca de 600 vezes.
 - **Cartões espalhados.** Os cartões repetem o mínimo de números entre si. Times, meses e trevos também não se repetem: com 12 cartões no Dia de Sorte, o Mês da Sorte sai em todo concurso.
 - **Modelo de popularidade.** É uma rede de 1 camada que aprende o que o público mais joga (números e padrões de escolha: datas, sequências, desenhos no volante, repetir o último resultado), a partir do número real de ganhadores de cada concurso. O botão "Acumulados que saíram" mostra, nos prêmios que ficaram vários concursos sem ganhador, que a maioria era de combinações pouco jogadas. O app só usa o modelo de um jogo quando ele acerta em concursos que não viu no treino. Números pouco jogados dividem menos o prêmio, mas a chance de acertar continua a mesma.
 - **Teste no passado.** O plano é jogado nos concursos reais, com os prêmios pagos de verdade, e comparado com cartões ao acaso.
@@ -68,11 +69,16 @@ python luckharness.py
 
 | Arquivo | Conteúdo |
 |---|---|
-| `core.py` | Dados (API da Caixa com espelho de reserva), banco SQLite, login, estatística, conferência, fechamento e alertas |
+| `core.py` | Dados, banco SQLite, login, estatística, conferência, fechamento e alertas |
 | `otimizador.py` | Probabilidades exatas, otimizador, cartões espalhados, modelo de popularidade, teste no passado, risco de ruína, auditoria e previsão |
 | `laboratorio.py` | Laboratório de estratégias: testes cegos, teste contínuo e registros para sorteios futuros |
 | `luckharness.py` | Interface Tkinter |
 | `tests/` | Testes pytest, incluindo a abertura de todas as abas |
+
+### De onde vêm os dados
+
+- **Resultados e prêmios pagos:** API oficial da Caixa (`servicebus2` e `servicebus3`). O histórico completo vem de uma vez por uma API espelho, e o app busca na Caixa os concursos que faltarem nela. Em 30/10/2026, os 28.177 concursos das 9 loterias foram conferidos com o histórico do [LotoAgora](https://lotoagora.com.br/downloads/) (cópia da Caixa), sem nenhuma diferença.
+- **Preços das apostas:** conforme as páginas oficiais em [loterias.caixa.gov.br](https://loterias.caixa.gov.br/) (reajuste de 09/07/2025). Ficam em `JOGOS`, no `core.py`; atualize ali a cada reajuste.
 
 Os dados ficam em `%APPDATA%\luckHarness\`: o banco, as preferências, o log e os modelos treinados. O botão **Backup** no topo do app salva uma cópia do banco.
 
