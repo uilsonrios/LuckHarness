@@ -484,14 +484,33 @@ class App(tk.Tk):
             messagebox.showinfo("Aposta da semana", f"Um cartão de {NOMES[jogo]} custa {brl(preco)}.")
             return
         save_prefs(orcamento=orc)
-        qtd = min(int(orc // preco), 20)
+        pedido = orc
+        # o limite do mês vale já na hora de montar, não só ao clicar em 'Apostei'
+        lim = load_prefs().get(f"limite_{self.user}") or 0
+        g, _ = banca_mes(self.user)
+        avisos = []
+        if lim:
+            resta = max(0.0, lim - g)
+            if resta < preco:
+                messagebox.showinfo("Aposta da semana", f"Seu limite do mês é {brl(lim)} e você já gastou {brl(g)}: "
+                                                        f"não sobra para um cartão de {brl(preco)}. O limite muda "
+                                                        "na aba Banca.")
+                return
+            if orc > resta:
+                avisos.append(f"Você pediu {brl(orc)}, mas o seu limite do mês é {brl(lim)} (já gastou {brl(g)}): "
+                              f"a aposta foi montada com {brl(resta)}. O limite muda na aba Banca.")
+                orc = resta
+        qtd = int(orc // preco)
+        if qtd > 20:
+            avisos.append(f"{brl(orc)} dariam {qtd} cartões; o app monta no máximo 20 por vez.")
+            qtd = 20
         self.s_ok.configure(state="disabled")
 
         def f():
             cards = sugestoes(jogo, qtd)
             itens = [(a, extra_aleatorio(jogo)) for a in cards]
-            g, _ = banca_mes(self.user)
-            linhas = [f"{NOMES[jogo]}: {qtd} cartão(ões), total {brl(qtd * preco)}\n"]
+            linhas = [f"{NOMES[jogo]}: {qtd} cartão(ões), total {brl(qtd * preco)} (você pediu até {brl(pedido)})\n"]
+            linhas += [a + "\n" for a in avisos]
             for i, (a, t) in enumerate(itens, 1):
                 fd = fator_divisao(jogo, a)
                 linhas.append(f"  {i}. {fmt_bet(jogo, a, t)}"

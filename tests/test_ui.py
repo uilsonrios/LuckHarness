@@ -144,3 +144,22 @@ def test_aposta_minima_gera_cartoes(app, monkeypatch):
     txt = _espera(app, app.o_out)
     assert "APOSTA MÍNIMA" in txt and "lotofacil" in txt
     assert len(app.otim_cards) == 1 and app.otim_plan["jogo"] == "lotofacil"
+
+
+def test_aposta_da_semana_respeita_o_limite_do_mes(app, monkeypatch):
+    # pediu R$ 50 com limite de R$ 7 sobrando no mês: monta 2 cartões, não 14
+    app.jogo.set("lotofacil")
+    g = core.banca_mes("ui_teste")[0]
+    core.save_prefs(**{"limite_ui_teste": g + 7})
+    app.s_val.delete(0, "end"); app.s_val.insert(0, "50")
+    monkeypatch.setattr(ui, "sugestoes", lambda j, q, n=None: [list(range(1 + i, 16 + i)) for i in range(q)])
+    try:
+        app.montar_semana()
+        fim = time.monotonic() + 20
+        while not app.s_cards and time.monotonic() < fim:
+            app.update()
+            time.sleep(0.05)
+        assert len(app.s_cards) == 2
+        assert "limite do mês" in app.s_out.get("1.0", "end")
+    finally:
+        core.save_prefs(**{"limite_ui_teste": 0})
