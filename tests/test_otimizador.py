@@ -213,3 +213,27 @@ def test_frequente_nao_premia_so_o_mes_da_sorte():
         top = o.otimizar(orc, "frequente")[0]
         assert not (top["jogo"] == "diadesorte" and top["p_dezenas"] < 0.5)
         assert top["p_dezenas"] <= top["p_semana"]
+
+
+def test_teste_no_passado_treina_popularidade_so_com_o_passado(monkeypatch):
+    with core.db() as c:
+        c.execute("DELETE FROM draws WHERE jogo='diadesorte'")
+        for i in range(40):
+            meta = {"premios": [["4 acertos", 5.0]], "trevos": [], "mes": core.MESES[i % 12]}
+            c.execute("INSERT INTO draws(jogo, concurso, dezenas, meta) VALUES(?,?,?,?)",
+                      ("diadesorte", i + 1, json.dumps([1, 2, 3, 4, 5, 6, 7]), json.dumps(meta)))
+    vistos = []
+    monkeypatch.setattr(o, "pesos_popularidade", lambda j: {i: 0.0 for i in range(1, 32)})
+    monkeypatch.setattr(o, "pesos_ate", lambda j, ate: vistos.append(ate) or {i: 0.0 for i in range(1, 32)})
+    r = o.testar_no_passado("diadesorte", 3, 7, concursos=30)
+    assert vistos == [11] and r["pop_ate"] == 11   # testa 11..40, o modelo só vê até o 10
+    assert "anteriores ao 11" in o.texto_teste(r)
+
+
+def test_cobertura_considera_sobreposicao_dos_cartoes():
+    # cartões espalhados premiam juntos mais do que a conta de cartões independentes
+    sim = o.cobertura_dezenas("lotofacil", 10)
+    pd = sum(core.hypergeom(25, 15, 15, h) for h in core.JOGOS["lotofacil"][3])
+    assert sim > o.prob_cartoes("lotofacil", pd, 10, extra=False) + 0.03
+    simples = [x for x in o.opcoes(35, ["lotofacil"]) if x["tipo"] == "simples" and x["n"] == 15]
+    assert simples[0]["p_dezenas"] == sim

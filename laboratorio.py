@@ -33,15 +33,7 @@ def _sql_lab():
 # ---------------- estratégias (só enxergam o passado) ----------------
 def _pop_passado(jogo, ate):
     """Pesos de popularidade treinados só com concursos anteriores a 'ate' (sem olhar o futuro)."""
-    am = [a for a in o._amostras(jogo) if a["concurso"] < ate]
-    if len(am) < 200:
-        return {}
-    cfg = {"nome": "lab", "modelo": "ridge", "alvo": "multi", "padroes": False, "meia_vida": 500}
-    c = int(len(am) * 0.8)
-    escolhida = o._ajusta(jogo, am[:c], cfg, am[c:])["cfg"]   # regularização escolhida na validação
-    m = o._ajusta(jogo, am, escolhida)
-    N = JOGOS[jogo][0]
-    return {i + 1: m["coef"][i] for i in range(N)}
+    return o.pesos_ate(jogo, ate)
 
 
 def _apostas(jogo, passado, ctx):
@@ -85,12 +77,14 @@ def _apostas(jogo, passado, ctx):
 
 # ---------------- estatística ----------------
 def _avaliar(jogo, registros):
-    """registros: {estratégia: [(acertos de cada cartão), ...]} -> tabela com z, valor-p e correção de Holm."""
+    """registros: {estratégia: [(acertos de cada cartão), ...]} -> tabela com z, valor-p e correção de Holm.
+    Hipótese nula: a estratégia acerta em média o mesmo que uma aposta ao acaso (n*K/N por cartão). A unidade
+    é o concurso: compara a média de acertos por cartão em cada concurso com o acaso."""
     N, K, mn, fx, _ = JOGOS[jogo]
     pmin = min(h for h in fx if h > 0)
     esp = mn * K / N
     sd = math.sqrt(mn * (K / N) * (1 - K / N) * (N - mn) / (N - 1))
-    p_premio = sum(hypergeom(N, K, mn, h) for h in fx if h >= pmin)
+    p_premio = sum(hypergeom(N, K, mn, h) for h in fx)   # inclui o zero acerto da Lotomania
     linhas = []
     for nome, por_conc in registros.items():
         hits = [h for cartoes in por_conc for h in cartoes]
@@ -98,13 +92,18 @@ def _avaliar(jogo, registros):
         if not n:
             continue
         media = sum(hits) / n
-        # cartões do mesmo concurso não são independentes: o erro padrão usa o número de concursos
         n_ef = len(por_conc)
         media_conc = [sum(c) / len(c) for c in por_conc]
-        sd_conc = sd / math.sqrt(len(por_conc[0]))
-        z = (sum(media_conc) / n_ef - esp) / (sd_conc / math.sqrt(n_ef))
+        m_conc = sum(media_conc) / n_ef
+        # cartões do mesmo concurso enfrentam o mesmo sorteio e podem ter dezenas em comum: o desvio vem da
+        # variação real entre concursos (com poucos concursos, do acaso com cartões independentes)
+        if n_ef >= 30:
+            sd_conc = math.sqrt(sum((x - m_conc) ** 2 for x in media_conc) / (n_ef - 1))
+        else:
+            sd_conc = sd / math.sqrt(len(por_conc[0]))
+        z = (m_conc - esp) / (sd_conc / math.sqrt(n_ef)) if sd_conc else 0.0
         p = math.erfc(abs(z) / math.sqrt(2))
-        premios = sum(h >= pmin for h in hits)
+        premios = sum(h in fx for h in hits)
         linhas.append({"nome": nome, "concursos": n_ef, "apostas": n, "media": media, "dif": media / esp - 1,
                        "z": z, "p": p, "premios": premios, "premios_esp": n * p_premio, "melhor": max(hits)})
     ordem = sorted(range(len(linhas)), key=lambda i: linhas[i]["p"])
@@ -112,7 +111,8 @@ def _avaliar(jogo, registros):
     for r, i in enumerate(ordem):   # correção de Holm: várias estratégias testadas ao mesmo tempo
         maior = max(maior, min(1.0, (len(linhas) - r) * linhas[i]["p"]))
         linhas[i]["p_ajust"] = maior
-    return {"jogo": jogo, "esperado": esp, "faixa": pmin, "p_premio": p_premio, "linhas": linhas}
+    faixa = f"{pmin}+" + (" ou 0" if 0 in fx else "")
+    return {"jogo": jogo, "esperado": esp, "faixa": faixa, "p_premio": p_premio, "linhas": linhas}
 
 
 # ---------------- testes ----------------
@@ -191,7 +191,7 @@ def texto_resultado(r):
     out = [f"=== LABORATÓRIO: {r['jogo'].upper()} ===", r["modo"]]
     if r.get("hash"):
         out.append(f"Impressão digital das apostas (gravada antes de ver os resultados): {r['hash'][:16]}…")
-    out += [f"Pelo acaso: {r['esperado']:.2f} acertos por aposta; prêmio ({r['faixa']}+) em {r['p_premio']:.1%} "
+    out += [f"Pelo acaso: {r['esperado']:.2f} acertos por aposta; prêmio ({r['faixa']}) em {r['p_premio']:.1%} "
             "das apostas.", "",
             f"{'Estratégia':<18}{'Apostas':>8}{'Média':>8}{'vs acaso':>10}{'valor-p':>9}{'ajust.':>8}"
             f"{'Prêmios':>9}{'esperado':>10}{'Melhor':>8}  Veredito"]

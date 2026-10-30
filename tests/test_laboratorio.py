@@ -63,3 +63,24 @@ def test_minha_aposta_valida_quantidade():
     with pytest.raises(ValueError):
         lab.minha_aposta("megasena", "1 2 3 4 5 6 7")
     assert lab.minha_aposta("megasena", "6 5 4 3 2 1") == [1, 2, 3, 4, 5, 6]
+
+
+def test_zero_acerto_da_lotomania_conta_como_premio():
+    r = lab._avaliar("lotomania", {"zero": [[0]] * 5, "nada": [[10]] * 5})
+    linha = {li["nome"]: li for li in r["linhas"]}
+    assert linha["zero"]["premios"] == 5 and linha["nada"]["premios"] == 0
+    assert r["faixa"] == "15+ ou 0"
+    assert r["p_premio"] == pytest.approx(sum(core.hypergeom(100, 20, 50, h) for h in (0, 15, 16, 17, 18, 19, 20)))
+
+
+def test_cartoes_iguais_no_mesmo_concurso_nao_viram_vantagem_falsa():
+    # 10 cópias do mesmo cartão ao acaso em cada concurso: as 10 não são observações independentes
+    rng = random.Random(3)
+    reg = {"copias": []}
+    for _ in range(200):
+        card, sorteio = set(rng.sample(range(1, 26), 15)), set(rng.sample(range(1, 26), 15))
+        reg["copias"].append([len(card & sorteio)] * 10)
+    li = lab._avaliar("lotofacil", reg)["linhas"][0]
+    media = sum(c[0] for c in reg["copias"]) / 200
+    # desvio entre concursos ~1,22 (o de um cartão), não 1,22/sqrt(10)
+    assert abs(li["z"]) == pytest.approx(abs(media - 9) / (1.22 / 200 ** 0.5), rel=0.15)

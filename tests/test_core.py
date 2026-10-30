@@ -1,3 +1,4 @@
+import json
 from itertools import combinations
 
 import pytest
@@ -252,3 +253,31 @@ def test_calendario_de_sorteios():
     assert core.proximo_sorteio("megasena", qua) == date(2026, 10, 29)
     assert core.proximo_sorteio("maismilionaria", qua) == qua
     assert "Mega-Sena" in core.texto_calendario(qua)
+
+
+def test_sync_corrige_dezenas_registra_e_recusa_invalidos(monkeypatch):
+    with core.db() as c:
+        c.execute("DELETE FROM draws WHERE jogo='quina'")
+    _salva("quina", 1, [1, 2, 3, 4, 5], [])
+    _salva("quina", 2, [6, 7, 8, 9, 10], [])
+    fonte = [{"concurso": 1, "dezenas": ["1", "2", "3", "4", "50"]},      # corrigido pela fonte
+             {"concurso": 2, "dezenas": ["10", "9", "8", "7", "6"]},      # mesma coisa, outra ordem
+             {"concurso": 3, "dezenas": ["1", "1", "2", "3", "4"]},       # repetida: recusa
+             {"concurso": 4, "dezenas": ["1", "2", "3", "4", "81"]}]      # fora de 1-80: recusa
+    monkeypatch.setattr(core, "_get", lambda url, timeout=15: fonte)
+    monkeypatch.setattr(core, "fetch", lambda j, k="": (_ for _ in ()).throw(OSError("sem rede")))
+    msgs = []
+    core.sync_draws("quina", log=msgs.append)
+    assert dict(core.load_draws("quina", 10))[1] == [1, 2, 3, 4, 50]
+    corr = core.db().execute("SELECT concurso, antes, depois FROM correcoes WHERE jogo='quina'").fetchall()
+    assert [c[0] for c in corr] == [1] and json.loads(corr[0][1]) == [1, 2, 3, 4, 5]
+    assert {c for c, _ in core.load_draws("quina", 10)} == {1, 2}
+    assert any("2 resultado(s) inválido(s)" in m for m in msgs) and any("corrigido" in m for m in msgs)
+
+
+def test_simular_soma_mes_da_sorte_com_as_faixas(monkeypatch):
+    # aposta que sempre faz 4 acertos e sempre acerta o mês: ganha os dois prêmios
+    r = {"preco": 2.5, "ev": 7.5, "linhas": [("4 acertos", 1.0, 5.0, 5.0), ("Mês da Sorte", 1.0, 2.5, 2.5)]}
+    monkeypatch.setattr(core, "valor_esperado", lambda j: r)
+    m = core.simular("diadesorte", 2.5, 1, n_sim=5)
+    assert m["mediana"] == 52 * (5.0 + 2.5) - 52 * 2.5

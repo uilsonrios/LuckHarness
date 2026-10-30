@@ -2,14 +2,14 @@
 import hashlib, json, logging, unicodedata, math, os, random, re, secrets, sqlite3, sys, urllib.error, urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime
 from itertools import combinations
 
 BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.13.1"
+__version__ = "1.13.2"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -68,6 +68,7 @@ def db():
         CREATE TABLE IF NOT EXISTS bets(id INTEGER PRIMARY KEY, user TEXT, jogo TEXT, dezenas TEXT, trevos TEXT,
                                         desde INT, criado TEXT);
         CREATE TABLE IF NOT EXISTS chats(id INTEGER PRIMARY KEY, user TEXT, role TEXT, content TEXT);
+        CREATE TABLE IF NOT EXISTS correcoes(jogo TEXT, concurso INT, antes TEXT, depois TEXT, quando TEXT);
         CREATE TABLE IF NOT EXISTS banca(id INTEGER PRIMARY KEY, user TEXT, data TEXT, tipo TEXT, valor REAL,
                                          descr TEXT);
         CREATE INDEX IF NOT EXISTS ix_bets_user ON bets(user);
@@ -230,13 +231,50 @@ def sync_draws(jogo, n=50, log=print):
         if len(achados) < len(faltam):
             log(f"{len(faltam) - len(achados)} concurso(s) não baixaram; tente de novo depois.")
         rows += [_row(jogo, d) for d in achados]
-    with db() as c:
-        antes = c.execute("SELECT COUNT(*) FROM draws WHERE jogo=?", (jogo,)).fetchone()[0]
+    validos = {}
+    for r in rows:
+        erro = valida_resultado(jogo, r[1], json.loads(r[2]), json.loads(r[3]))
+        if erro:
+            logging.getLogger("luckharness").warning("resultado recusado: %s", erro)
+        else:
+            validos[r[1]] = r
+    if len(validos) < len(rows):
+        log(f"{len(rows) - len(validos)} resultado(s) inválido(s) recusado(s) (detalhes no log).")
+    rows = list(validos.values())
+    mesma = (lambda d: d) if jogo == "supersete" else sorted   # Super Sete: a ordem das colunas importa
+    with db() as c:   # uma transação: ou grava tudo, ou nada
+        antigos = {k: json.loads(d) for k, d in c.execute("SELECT concurso, dezenas FROM draws WHERE jogo=?",
+                                                          (jogo,))}
+        agora = datetime.now().isoformat(timespec="seconds")
+        corr = [(jogo, k, json.dumps(antigos[k]), dz, agora) for _, k, dz, _ in rows
+                if k in antigos and mesma(antigos[k]) != mesma(json.loads(dz))]
+        c.executemany("INSERT INTO correcoes(jogo, concurso, antes, depois, quando) VALUES(?,?,?,?,?)", corr)
         c.executemany("INSERT INTO draws(jogo, concurso, dezenas, meta) VALUES(?,?,?,?) "
-                      "ON CONFLICT(jogo, concurso) DO UPDATE SET meta=excluded.meta", rows)
-        novos = c.execute("SELECT COUNT(*) FROM draws WHERE jogo=?", (jogo,)).fetchone()[0] - antes
+                      "ON CONFLICT(jogo, concurso) DO UPDATE SET dezenas=excluded.dezenas, meta=excluded.meta",
+                      rows)
+        novos = c.execute("SELECT COUNT(*) FROM draws WHERE jogo=?", (jogo,)).fetchone()[0] - len(antigos)
+    if corr:
+        log(f"{len(corr)} resultado(s) corrigido(s) pela fonte: concurso(s) "
+            + ", ".join(str(x[1]) for x in corr[:10]) + ".")
     log(f"{len(rows)} concursos disponíveis, {novos} novos salvos.")
     return novos
+
+
+def valida_resultado(jogo, concurso, dezenas, meta):
+    """Motivo para recusar um resultado antes de gravar, ou None se estiver certo."""
+    N, K = JOGOS[jogo][:2]
+    lo, hi = (0, 9) if jogo == "supersete" else (0, 99) if jogo == "lotomania" else (1, N)
+    if not isinstance(concurso, int) or concurso < 1:
+        return f"{jogo}: número de concurso inválido ({concurso!r})"
+    listas = [("dezenas", dezenas)] + ([("2º sorteio", meta.get("dezenas2") or [])] if jogo == "duplasena" else [])
+    for nome, d in listas:
+        if len(d) != K or any(not lo <= x <= hi for x in d) or (jogo != "supersete" and len(set(d)) != K):
+            return f"{jogo} {concurso}: {nome} inválidas {d}"
+    if jogo == "maismilionaria":
+        t = meta.get("trevos") or []
+        if len(t) != 2 or len(set(t)) != 2 or any(not 1 <= x <= 6 for x in t):
+            return f"{jogo} {concurso}: trevos inválidos {t}"
+    return None
 
 
 def load_draws(jogo, n):
@@ -508,7 +546,9 @@ def texto_ev(r):
     for desc, p, val, c in r["linhas"]:
         chance = "1 em " + f"{1 / p:,.0f}".replace(",", ".")
         out.append(f"{desc[:51]:<52}{chance:>16}{brl(val):>18}{brl(c):>12}")
-    out += ["", f"Valor esperado: {brl(r['ev'])} por aposta  ->  volta {r['retorno']:.0%} do que você paga",
+    out += ["", f"Valor esperado estimado: {brl(r['ev'])} por aposta  ->  volta {r['retorno']:.0%} do que você paga",
+            "Estimativa: chances exatas x prêmio principal estimado (já dividido entre os ganhadores esperados) e, "
+            "nas outras faixas, a mediana paga nos últimos 100 concursos.",
             f"Custo efetivo: cada R$ 1,00 apostado perde em média {brl(1 - r['retorno'])}.",
             "Apostar mais dezenas multiplica custo e valor esperado igualmente: o retorno % não muda.",
             "Prêmios acima de R$ 2.259,20 já descontam 30% de IR."]
@@ -614,9 +654,14 @@ def simular(jogo, semanal, anos, n_sim=2000):
         raise ValueError(f"Com {brl(semanal)} por semana não dá para fazer uma aposta de {brl(r['preco'])}.")
     T = por_semana * 52 * anos
     gasto = T * r["preco"]
-    faixas = [(p, val) for _, p, val, _ in r["linhas"]]
+    # faixas das dezenas se excluem entre si; Time do Coração / Mês da Sorte é outro evento, que pode sair
+    # junto com qualquer uma delas na mesma aposta
+    extra = EXTRA[jogo][1] if jogo in EXTRA else None
+    faixas = [(p, val) for desc, p, val, _ in r["linhas"] if desc != extra]
+    p_ex, v_ex = next(((p, val) for desc, p, val, _ in r["linhas"] if desc == extra), (0.0, 0.0))
     sorteios = T * (2 if jogo == "duplasena" else 1)
-    res = sorted(_sorteia_ganho(faixas, sorteios) - gasto for _ in range(n_sim))
+    res = sorted(_sorteia_ganho(faixas, sorteios) + (random.binomialvariate(T, p_ex) * v_ex if p_ex else 0)
+                 - gasto for _ in range(n_sim))
     pct = lambda q: res[min(len(res) - 1, int(q * len(res)))]
     return {"jogo": jogo, "gasto": gasto, "apostas": T, "por_semana": por_semana, "res": res,
             "mediana": pct(.5), "p10": pct(.1), "p90": pct(.9), "pior": res[0], "melhor": res[-1],
@@ -635,10 +680,11 @@ def texto_sim(m, semanal, anos):
         f"  Mediana (o típico):  {pos(m['mediana'])}",
         f"  90% dos cenários:    {pos(m['p90'])} ou menos",
         f"  Melhor cenário:      {pos(m['melhor'])}",
-        f"  Média matemática:    {pos(m['esperado'])}", "",
+        f"  Média estimada:      {pos(m['esperado'])}", "",
         f"Chance de terminar com lucro: {m['p_lucro']:.1%}".replace(".", ","),
         "A média inclui o prêmio principal raríssimo; a mediana mostra o que acontece com quase todo mundo.",
-        "Simulação com os prêmios atuais; prêmios futuros variam."])
+        "Simulação com os prêmios atuais: o prêmio principal estimado do próximo concurso e, nas outras faixas, "
+        "a mediana dos últimos 100 concursos. São estimativas; os prêmios futuros variam."])
 
 
 def historico_retorno(jogo, n=200):

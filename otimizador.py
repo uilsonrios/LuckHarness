@@ -105,12 +105,16 @@ def opcoes(orcamento, jogos=None):
             k = int(orcamento // c)
             if k < 1:
                 break
-            pd = prob_premio(j, n, extra=False)
-            if j == "duplasena":
-                pd = 1 - (1 - pd) ** 0.5   # prob_cartoes aplica os dois sorteios
-            ps = prob_cartoes(j, pd, k)
+            if 2 <= k <= COB_MAX_CARTOES and n == mn:
+                p_dz = cobertura_dezenas(j, k)
+            else:
+                pd = prob_premio(j, n, extra=False)
+                if j == "duplasena":
+                    pd = 1 - (1 - pd) ** 0.5   # prob_cartoes aplica os dois sorteios
+                p_dz = prob_cartoes(j, pd, k, extra=False)
+            ps = 1 - (1 - p_dz) * _sem_extra(j, k)
             out.append({"jogo": j, "tipo": "simples", "n": n, "k": k, "custo": c, "gasto": k * c, "p_semana": ps,
-                        "p_dezenas": prob_cartoes(j, pd, k, extra=False),
+                        "p_dezenas": p_dz,
                         "p_principal_ano": 1 - (1 - prob_principal(j, n)) ** (k * 52), "retorno": ret,
                         "plano": f"{k} cartão(ões) de {n}"})
         out += _opcoes_bolao(j, orcamento, ret) + _opcoes_fechamento(j, orcamento, ret)
@@ -318,6 +322,22 @@ def simular_cobertura(jogo, cards, n_sim=20000, rng=random, trevos=None):
     return ok / n_sim
 
 
+COB_MAX_CARTOES = 60   # acima disso a simulação fica lenta; usa a aproximação de cartões independentes
+_COB = {}
+
+
+def cobertura_dezenas(jogo, k, n=None, n_sim=4000):
+    """P(algum de k cartões espalhados premiar nas dezenas) simulando sorteios com os cartões que o app gera:
+    considera a sobreposição entre eles (a conta de cartões independentes subestima até ~7 pontos)."""
+    chave = (jogo, k, n)
+    if chave not in _COB:
+        rng = random.Random(7)
+        cards = cartoes_espalhados(jogo, k, n, None, rng)
+        tv = extras_espalhados(jogo, k, rng) if jogo == "maismilionaria" else None
+        _COB[chave] = simular_cobertura(jogo, cards, n_sim, random.Random(8), tv)
+    return _COB[chave]
+
+
 def comparar_cobertura(jogo, k, n=None, n_sim=20000, seed=7):
     """Cartões espalhados x cartões ao acaso, com os mesmos sorteios simulados."""
     N, _, mn = JOGOS[jogo][:3]
@@ -367,6 +387,19 @@ def pesos_popularidade(jogo):
     if not m or not m.get("confiavel") or jogo == "supersete":
         return None
     return {int(k): v for k, v in m["pesos"].items()}
+
+
+def pesos_ate(jogo, ate):
+    """Pesos de popularidade treinados só com concursos anteriores a 'ate' (testes no passado sem olhar o futuro).
+    {} se houver poucos concursos antes de 'ate'."""
+    am = [a for a in _amostras(jogo) if a["concurso"] < ate]
+    if len(am) < 200 or jogo == "supersete":
+        return {}
+    cfg = {"nome": "passado", "modelo": "ridge", "alvo": "multi", "padroes": False, "meia_vida": 500}
+    c = int(len(am) * 0.8)
+    escolhida = _ajusta(jogo, am[:c], cfg, am[c:])["cfg"]   # regularização escolhida na validação
+    m = _ajusta(jogo, am, escolhida)
+    return {i + 1: m["coef"][i] for i in range(JOGOS[jogo][0])}
 
 
 def _padroes(jogo, dz, anterior):
@@ -856,6 +889,9 @@ def testar_no_passado(jogo, k, n=None, concursos=104, retorno_min=0.0, seed=7):
         filtro = {c: r for c, _, r in historico_retorno(jogo, concursos + 1)}
     rng = random.Random(seed)
     preco = custo(jogo, list(range(1, n + 1)), [1, 2] if jogo == "maismilionaria" else [])
+    # o modelo salvo pode ter visto os concursos testados: retreina só com os anteriores ao 1º deles
+    pop_ate = rows[0][0] if pesos_popularidade(jogo) else None
+    pesos = (pesos_ate(jogo, pop_ate) or None) if pop_ate else None
 
     def plano(espalhado):
         res = {"jogados": 0, "gasto": 0.0, "ganho": 0.0, "com_premio": 0, "maior": 0.0, "faixas": Counter()}
@@ -863,7 +899,7 @@ def testar_no_passado(jogo, k, n=None, concursos=104, retorno_min=0.0, seed=7):
             if filtro is not None and filtro.get(conc, 0) < retorno_min:
                 continue
             if espalhado:
-                cards = cartoes_espalhados(jogo, k, n, pesos_popularidade(jogo), rng)
+                cards = cartoes_espalhados(jogo, k, n, pesos, rng)
             elif jogo == "supersete":
                 cards = [[rng.randrange(10) for _ in range(7)] for _ in range(k)]
             else:
@@ -890,7 +926,7 @@ def testar_no_passado(jogo, k, n=None, concursos=104, retorno_min=0.0, seed=7):
         return res
 
     return {"jogo": jogo, "k": k, "n": n, "concursos": len(rows), "retorno_min": retorno_min,
-            "esp": plano(True), "acaso": plano(False)}
+            "pop_ate": pop_ate if pesos else None, "esp": plano(True), "acaso": plano(False)}
 
 
 def texto_teste(r):
@@ -908,7 +944,9 @@ def texto_teste(r):
     out = [f"=== TESTE NO PASSADO: {r['jogo'].upper()}, {r['k']} cartão(ões) de {r['n']} dezenas por concurso, "
            f"últimos {r['concursos']} concursos{filtro} ===", "",
            "Prêmios reais pagos em cada concurso. Os cartões são gerados como o app geraria naquele dia "
-           "(o sorteio ainda não era conhecido).", ""]
+           "(o sorteio ainda não era conhecido)."
+           + (f" Números pouco jogados: modelo treinado só com concursos anteriores ao {r['pop_ate']}."
+              if r.get("pop_ate") else ""), ""]
     out += bloco("Plano do Otimizador (cartões espalhados)", r["esp"]) + [""]
     out += bloco("Mesmo gasto com cartões ao acaso", r["acaso"])
     out += ["", "Um teste no passado mostra o que teria acontecido, não o que vai acontecer. Variações entre os "
