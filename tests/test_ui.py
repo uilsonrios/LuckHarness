@@ -88,7 +88,7 @@ def test_aposta_da_semana_monta_e_registra(app, monkeypatch):
     assert app.nb.tab(0, "text") == "Minha aposta da semana"
     app.jogo.set("lotofacil")
     assert app.jogo.get() == "lotofacil" and ui.ttk.Combobox.get(app.jogo) == "Lotofácil"
-    app.s_val.delete(0, "end"); app.s_val.insert(0, "9")
+    app.s_val.delete(0, "end"); app.s_val.insert(0, "10,50")
     monkeypatch.setattr(ui, "sugestoes", lambda j, q, n=None: [list(range(1 + i, 16 + i)) for i in range(q)])
     app.montar_semana()
     fim = time.monotonic() + 20
@@ -98,7 +98,7 @@ def test_aposta_da_semana_monta_e_registra(app, monkeypatch):
     assert len(app.s_cards) == 3
     antes = core.banca_mes("ui_teste")[0]
     app.apostei()
-    assert core.banca_mes("ui_teste")[0] == antes + 9
+    assert core.banca_mes("ui_teste")[0] == antes + 10.5
 
 
 def test_volante_marca_dezenas(app):

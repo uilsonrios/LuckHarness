@@ -31,8 +31,8 @@ def test_parse_bet_invalida(jogo, txt):
 
 
 def test_custo():
-    assert core.custo("megasena", list(range(1, 7)), []) == 5.0
-    assert core.custo("megasena", list(range(1, 8)), []) == 5.0 * 7
+    assert core.custo("megasena", list(range(1, 7)), []) == 6.0
+    assert core.custo("megasena", list(range(1, 8)), []) == 6.0 * 7
     assert core.custo("maismilionaria", list(range(1, 7)), [1, 2, 3]) == 6.0 * 3
 
 
@@ -203,6 +203,38 @@ def test_sync_sem_espelho_com_concurso_faltando(monkeypatch):
     msgs = []
     assert core.sync_draws("quina", 5, log=msgs.append) == 4
     assert any("não baixaram" in m for m in msgs)
+
+
+def test_sync_completa_buracos_do_espelho_pela_caixa(monkeypatch):
+    # espelho sem os concursos 2 e 4 (como na Timemania): a Caixa preenche
+    def get(url, timeout=15):
+        return [{"concurso": k, "dezenas": ["1", "2", "3", "4", "5"]} for k in (1, 3, 5)]
+
+    pedidos = []
+
+    def fetch(jogo, k=""):
+        pedidos.append(k)
+        return {"concurso": k, "dezenas": ["6", "7", "8", "9", "10"], "data": "", "trevos": [], "premios": []}
+    monkeypatch.setattr(core, "_get", get)
+    monkeypatch.setattr(core, "fetch", fetch)
+    with core.db() as c:
+        c.execute("DELETE FROM draws WHERE jogo='quina'")
+    assert core.sync_draws("quina", log=lambda m: None) == 5
+    assert sorted(pedidos) == [2, 4]
+    assert [c for c, _ in core.load_draws("quina", 10)] == [5, 4, 3, 2, 1]
+
+
+def test_fetch_tenta_os_dois_servidores_da_caixa(monkeypatch):
+    urls = []
+
+    def get(url, timeout=15):
+        urls.append(url)
+        if "servicebus2" in url:
+            raise OSError("fora do ar")
+        return {"numero": 7, "listaDezenas": ["01", "02", "03", "04", "05"]}
+    monkeypatch.setattr(core, "_get", get)
+    assert core.fetch("quina", 7)["concurso"] == 7
+    assert "servicebus2" in urls[0] and "servicebus3" in urls[1]
 
 
 def test_mes_ambiguo_e_texto_sobrando():

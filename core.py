@@ -9,28 +9,31 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.13.0"
+__version__ = "1.13.1"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
 AVATAR = os.path.join(BASE, "avatar.png")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:4b-instruct")
-CAIXA = "https://servicodados.caixa.gov.br/portaldeloterias/api/{}/{}"
+# API oficial da Caixa (o antigo servicodados.caixa.gov.br não resolve mais)
+CAIXA = ("https://servicebus2.caixa.gov.br/portaldeloterias/api/{}/{}",
+         "https://servicebus3.caixa.gov.br/portaldeloterias/api/{}/{}")
 MIRROR = "https://loteriascaixa-api.herokuapp.com/api/{}/{}"
 
 # jogo: (universo N, dezenas sorteadas K, dezenas apostadas mínimas, faixas premiadas, preço aposta mínima)
+# preços oficiais da Caixa (reajuste de 09/07/2025: Mega, Lotofácil, Quina, Dupla Sena e Super Sete)
 # supersete: N=10 dígitos por coluna, K=7 colunas
 JOGOS = {
-    "megasena": (60, 6, 6, [4, 5, 6], 5.00),
-    "lotofacil": (25, 15, 15, [11, 12, 13, 14, 15], 3.00),
-    "quina": (80, 5, 5, [2, 3, 4, 5], 2.50),
+    "megasena": (60, 6, 6, [4, 5, 6], 6.00),
+    "lotofacil": (25, 15, 15, [11, 12, 13, 14, 15], 3.50),
+    "quina": (80, 5, 5, [2, 3, 4, 5], 3.00),
     "lotomania": (100, 20, 50, [0, 15, 16, 17, 18, 19, 20], 3.00),
-    "duplasena": (50, 6, 6, [3, 4, 5, 6], 2.50),
+    "duplasena": (50, 6, 6, [3, 4, 5, 6], 3.00),
     "timemania": (80, 7, 10, [3, 4, 5, 6, 7], 3.50),
     "diadesorte": (31, 7, 7, [4, 5, 6, 7], 2.50),
     "maismilionaria": (50, 6, 6, [2, 3, 4, 5, 6], 6.00),
-    "supersete": (10, 7, 7, [3, 4, 5, 6, 7], 2.50),
+    "supersete": (10, 7, 7, [3, 4, 5, 6, 7], 3.00),
 }
 MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro",
          "Novembro", "Dezembro"]
@@ -169,15 +172,18 @@ def _from_caixa(d):
 
 
 def fetch(jogo, concurso=""):
-    """Tenta a API oficial da Caixa; se falhar, usa a API espelho. Devolve formato normalizado."""
-    try:
-        return _from_caixa(_get(CAIXA.format(jogo, concurso)))
-    except Exception as e1:
+    """Tenta a API oficial da Caixa (dois servidores); se falhar, usa a API espelho. Formato normalizado."""
+    e1 = None
+    for url in CAIXA:
         try:
-            return _from_mirror(_get(MIRROR.format(jogo, concurso or "latest")))
-        except Exception as e2:
-            raise RuntimeError(f"Sem acesso aos resultados. Verifique internet/proxy/firewall.\n"
-                               f"  Caixa: {e1}\n  Espelho: {e2}") from None
+            return _from_caixa(_get(url.format(jogo, concurso)))
+        except Exception as e:
+            e1 = e
+    try:
+        return _from_mirror(_get(MIRROR.format(jogo, concurso or "latest")))
+    except Exception as e2:
+        raise RuntimeError(f"Sem acesso aos resultados. Verifique internet/proxy/firewall.\n"
+                           f"  Caixa: {e1}\n  Espelho: {e2}") from None
 
 
 def _row(jogo, d):
@@ -196,16 +202,24 @@ def _row(jogo, d):
     return jogo, d["concurso"], json.dumps(dez), json.dumps(meta)
 
 
+MAX_BURACOS = 300   # concursos faltando no espelho buscados na Caixa por sincronização
+
+
 def sync_draws(jogo, n=50, log=print):
-    """Baixa o histórico completo de uma vez pela API espelho; se falhar, busca na Caixa em paralelo."""
+    """Baixa o histórico completo de uma vez pela API espelho e completa pela Caixa os concursos que o espelho
+    não tem; sem espelho, busca na Caixa os últimos n concursos em paralelo."""
+    have = {r[0] for r in db().execute("SELECT concurso FROM draws WHERE jogo=?", (jogo,))}
     try:
         rows = [_row(jogo, _from_mirror(d)) for d in _get(MIRROR.format(jogo, "").rstrip("/"), 60)]
+        tem = have | {r[1] for r in rows}
+        faltam = [k for k in range(max(tem), 0, -1) if k not in tem][:MAX_BURACOS]
     except Exception:
         log("Espelho indisponível, buscando na Caixa (mais lento)...")
         last = fetch(jogo)
         num = last["concurso"]
-        have = {r[0] for r in db().execute("SELECT concurso FROM draws WHERE jogo=?", (jogo,))}
+        rows = [_row(jogo, last)]
         faltam = [k for k in range(num - 1, max(0, num - n), -1) if k not in have]
+    if faltam:
         def busca(k):
             try:
                 return fetch(jogo, k)
@@ -215,7 +229,7 @@ def sync_draws(jogo, n=50, log=print):
             achados = [d for d in ex.map(busca, faltam) if d]
         if len(achados) < len(faltam):
             log(f"{len(faltam) - len(achados)} concurso(s) não baixaram; tente de novo depois.")
-        rows = [_row(jogo, d) for d in [last] + achados]
+        rows += [_row(jogo, d) for d in achados]
     with db() as c:
         antes = c.execute("SELECT COUNT(*) FROM draws WHERE jogo=?", (jogo,)).fetchone()[0]
         c.executemany("INSERT INTO draws(jogo, concurso, dezenas, meta) VALUES(?,?,?,?) "
@@ -284,10 +298,34 @@ def analyze(jogo, draws, n_bet):
         tf = Counter(x for t in load_trevos(jogo, total) for x in t)
         out.append("Trevos (1 a 6, saem 2): " + ", ".join(f"{t}({tf.get(t, 0)})" for t in range(1, 7)))
         out.append("  P(acertar os 2 trevos com 2 marcados) = 1/15")
+    out += repeticoes(jogo, draws)
     out.append("")
     out.append("AVISO: cada sorteio é independente. Frequência passada NÃO altera a probabilidade futura.")
     out.append("Valor esperado de qualquer aposta é negativo (~50% do arrecadado vira prêmio).")
     return "\n".join(out), freq, atraso, (m, sd) if somas else (None, None), somas
+
+
+def repeticoes(jogo, draws):
+    """Quantas dezenas se repetem de um concurso para o seguinte, real vs. acaso, e a 'regra do +1'
+    (jogar cada dezena do último sorteio somada de 1) comparada a qualquer outra aposta."""
+    N, K = JOGOS[jogo][:2]
+    pares = [(set(a), set(b)) for (_, a), (_, b) in zip(draws[1:], draws)]  # (anterior, seguinte)
+    if not pares:
+        return []
+    rep = Counter(len(a & b) for a, b in pares)
+    mais1 = [len({x % N + 1 for x in a} & b) for a, b in pares]
+    esp = K * K / N
+    out = ["", f"Repetição do concurso anterior ({len(pares)} pares de concursos seguidos):",
+           f"  Média real: {sum(k * c for k, c in rep.items()) / len(pares):.2f} dezenas repetidas "
+           f"(acaso puro: {esp:.2f})"]
+    for k in range(max(0, 2 * K - N), K + 1):
+        p = hypergeom(N, K, K, k)
+        if rep.get(k) or p > 0.005:
+            out.append(f"  {k:>2} repetidas: {rep.get(k, 0) / len(pares):6.1%} dos concursos (teórico {p:6.1%})")
+    out.append(f"  'Regra do +1' (dezenas do último sorteio + 1): acertou em média {sum(mais1) / len(pares):.2f} "
+               f"(qualquer aposta de {K}: {esp:.2f})")
+    out.append("  -> repetir dezenas é o normal; evitar ou deslocar o último resultado não muda a chance.")
+    return out
 
 
 def analyze_ss(draws):
@@ -301,7 +339,7 @@ def analyze_ss(draws):
         p = math.comb(7, k) * 0.1 ** k * 0.9 ** (7 - k)
         out.append(f"  {k} acertos: P = {p:.3e}  (1 em {1/p:,.0f})")
     out.append("Acertos esperados E[X] = 7 x 0,1 = 0,700")
-    out.append("Custo da aposta simples: R$ 2,50")
+    out.append("Custo da aposta simples: R$ 3,00")
     out.append("")
     out.append("Qui-quadrado por coluna (gl=9, crítico 5% ≈ 16,9):")
     for c in range(7):
