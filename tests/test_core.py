@@ -215,14 +215,22 @@ def test_sync_completa_buracos_do_espelho_pela_caixa(monkeypatch):
 
     def fetch(jogo, k=""):
         pedidos.append(k)
-        return {"concurso": k, "dezenas": ["6", "7", "8", "9", "10"], "data": "", "trevos": [], "premios": []}
+        return {"concurso": k or ultimo, "dezenas": ["6", "7", "8", "9", "10"], "data": "", "trevos": [],
+                "premios": []}
     monkeypatch.setattr(core, "_get", get)
     monkeypatch.setattr(core, "fetch", fetch)
     with core.db() as c:
         c.execute("DELETE FROM draws WHERE jogo='quina'")
+    ultimo = 5
     assert core.sync_draws("quina", log=lambda m: None) == 5
-    assert sorted(pedidos) == [2, 4]
+    assert sorted(pedidos, key=str) == ["", 2, 4]
     assert [c for c, _ in core.load_draws("quina", 10)] == [5, 4, 3, 2, 1]
+    # espelho atrasado: a Caixa já tem o 7, então o 6 e o 7 também entram
+    pedidos.clear()
+    ultimo = 7
+    core.sync_draws("quina", log=lambda m: None)
+    assert sorted(pedidos, key=str) == ["", 6]
+    assert [c for c, _ in core.load_draws("quina", 10)] == [7, 6, 5, 4, 3, 2, 1]
 
 
 def test_fetch_tenta_os_dois_servidores_da_caixa(monkeypatch):
@@ -258,6 +266,7 @@ def test_calendario_de_sorteios():
 def test_sync_corrige_dezenas_registra_e_recusa_invalidos(monkeypatch):
     with core.db() as c:
         c.execute("DELETE FROM draws WHERE jogo='quina'")
+        c.execute("DELETE FROM correcoes WHERE jogo='quina'")
     _salva("quina", 1, [1, 2, 3, 4, 5], [])
     _salva("quina", 2, [6, 7, 8, 9, 10], [])
     fonte = [{"concurso": 1, "dezenas": ["1", "2", "3", "4", "50"]},      # corrigido pela fonte

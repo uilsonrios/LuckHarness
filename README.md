@@ -20,7 +20,7 @@ O Windows pode mostrar o aviso "O Windows protegeu o computador", porque o execu
 | **Fechamento** | Gera cartões com garantia, por exemplo "se 4 das minhas 15 saírem, um cartão faz 3". Uma busca local reduz o número de cartões |
 | **Retorno** | Quanto cada jogo devolve em média agora, e alertas quando o prêmio acumulado melhora o retorno |
 | **Planejamento** | Simulação de anos de apostas e histórico do retorno |
-| **Otimizador** | Escolhe o jogo e o formato (cartões simples, bolão ou fechamento) para o seu orçamento. Também tem risco de ruína, teste no passado, auditoria de aleatoriedade e previsão do acumulado |
+| **Otimizador** | Escolhe o jogo e o formato (cartões simples, bolão ou fechamento) para o seu orçamento. Também tem "Aposta mínima, prêmio maior", risco de ruína, teste no passado, auditoria de aleatoriedade e previsão do acumulado |
 | **Laboratório** | Testa qualquer estratégia (inclusive a sua aposta) com os resultados reais, às cegas: teste cego com impressão digital das apostas, teste contínuo com "aprende com erros e acertos", e registro de apostas para sorteios que ainda não aconteceram |
 | **Banca** | Gastos, prêmios e limite mensal |
 | **Harness IA** | Chat com um modelo local que recebe as contas do app como contexto |
@@ -31,6 +31,7 @@ O Windows pode mostrar o aviso "O Windows protegeu o computador", porque o execu
 - **Cartões espalhados.** Os cartões repetem o mínimo de números entre si. Times, meses e trevos também não se repetem: com 12 cartões no Dia de Sorte, o Mês da Sorte sai em todo concurso.
 - **Modelo de popularidade.** É uma rede de 1 camada que aprende o que o público mais joga (números e padrões de escolha: datas, sequências, desenhos no volante, repetir o último resultado), a partir do número real de ganhadores de cada concurso. O botão "Acumulados que saíram" mostra, nos prêmios que ficaram vários concursos sem ganhador, que a maioria era de combinações pouco jogadas. O app só usa o modelo de um jogo quando ele acerta em concursos que não viu no treino. Números pouco jogados dividem menos o prêmio, mas a chance de acertar continua a mesma.
 - **Teste no passado.** O plano é jogado nos concursos reais, com os prêmios pagos de verdade, e comparado com cartões ao acaso.
+- **Aposta mínima, prêmio maior.** Você diz quanto quer gastar (por exemplo R$ 6) e o tamanho do prêmio que quer receber de uma vez (R$ 1 mil, 10 mil, 100 mil ou 1 milhão). O app compara os 9 jogos, em cartões simples ou numa cota de bolão, e mostra onde a chance é maior. Exemplo: para receber pelo menos R$ 1 milhão gastando até R$ 10, 1/7 de um bolão de 7 dezenas da Quina dá 1 chance em 1,1 milhão, contra 1 em 50 milhões numa aposta simples da Mega-Sena.
 
 Exemplo dos últimos 104 concursos, com o mesmo gasto:
 
@@ -79,6 +80,7 @@ python luckharness.py
 
 - **Resultados e prêmios pagos:** API oficial da Caixa (`servicebus2` e `servicebus3`). O histórico completo vem de uma vez por uma API espelho, e o app busca na Caixa os concursos que faltarem nela. Em 30/10/2026, os 28.177 concursos das 9 loterias foram conferidos com o histórico do [LotoAgora](https://lotoagora.com.br/downloads/) (cópia da Caixa), sem nenhuma diferença.
 - **Preços das apostas:** conforme as páginas oficiais em [loterias.caixa.gov.br](https://loterias.caixa.gov.br/) (reajuste de 09/07/2025). Ficam em `JOGOS`, no `core.py`; atualize ali a cada reajuste.
+- **Regras de bolão:** a cota mínima e o máximo de cotas para cada número de dezenas, conforme as mesmas páginas oficiais (consultadas em 30/10/2026). Ficam em `BOLAO`, no `core.py`.
 
 Os dados ficam em `%APPDATA%\luckHarness\`: o banco, as preferências, o log e os modelos treinados. O botão **Backup** no topo do app salva uma cópia do banco.
 

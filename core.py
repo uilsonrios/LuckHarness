@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.13.2"
+__version__ = "1.14.0"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -41,6 +41,37 @@ MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "A
 EXTRA = {"timemania": ("time", "Time do Coração", 1 / 80), "diadesorte": ("mes", "Mês da Sorte", 1 / 12)}
 MAX_DEZ = {"megasena": 20, "lotofacil": 20, "quina": 15, "lotomania": 50, "duplasena": 15,
            "timemania": 10, "diadesorte": 15, "maismilionaria": 12, "supersete": 7}
+# Bolão CAIXA com uma aposta de n dezenas: n -> (valor mínimo da cota, máximo de cotas); mínimo de 2 cotas.
+# Tabelas das páginas oficiais em loterias.caixa.gov.br (consultadas em 30/10/2026). Com a aposta mínima o bolão
+# precisa de várias apostas (não modelado). +Milionária: apostas com 2 trevos. Cotas prontas vendidas na lotérica
+# podem custar até 35% a mais (tarifa de serviço).
+BOLAO = {
+    "megasena": {7: (8.00, 50), 8: (8.00, 100), 9: (8.00, 100), 10: (12.60, 100), 11: (27.72, 100),
+                 12: (55.44, 100), 13: (102.96, 100), 14: (180.18, 100), 15: (300.30, 100), 16: (480.48, 100),
+                 17: (742.56, 100), 18: (1113.84, 100), 19: (1627.92, 100), 20: (2325.60, 100)},
+    "lotofacil": {16: (4.50, 35), 17: (11.90, 40), 18: (57.12, 50), 19: (159.60, 85), 20: (542.64, 100)},
+    "quina": {6: (4.00, 25), 7: (4.00, 50), 8: (4.00, 50), 9: (7.56, 50), 10: (15.12, 50), 11: (27.72, 50),
+              12: (47.52, 50), 13: (77.22, 50), 14: (120.12, 50), 15: (180.18, 50)},
+    "diadesorte": {8: (3.00, 20), 9: (3.60, 25), 10: (6.00, 50), 11: (11.00, 60), 12: (26.40, 60),
+                   13: (42.90, 60), 14: (85.80, 100), 15: (160.88, 100)},
+    "duplasena": {7: (3.00, 50), 8: (3.00, 50), 9: (5.04, 50), 10: (12.60, 50), 11: (27.72, 50),
+                  12: (55.44, 50), 13: (102.96, 50), 14: (180.18, 50), 15: (300.30, 50)},
+    "maismilionaria": {7: (6.00, 98), 8: (6.00, 100), 9: (6.00, 100), 10: (12.60, 100), 11: (27.72, 100),
+                       12: (55.44, 100)},
+}
+
+
+def cotas_bolao(jogo, n, custo_aposta, ate):
+    """Menor número de cotas permitido para a cota caber em 'ate' reais (menos cotas = parte maior do prêmio).
+    None se a Caixa não permite esse bolão com cota até esse valor."""
+    regra = BOLAO.get(jogo, {}).get(n)
+    if not regra:
+        return None
+    cota_min, maximo = regra
+    q = max(2, math.ceil(custo_aposta / ate - 1e-9))
+    if q > maximo or custo_aposta / q < cota_min - 1e-9:
+        return None
+    return q
 
 
 # ---------------- banco ----------------
@@ -213,6 +244,12 @@ def sync_draws(jogo, n=50, log=print):
     try:
         rows = [_row(jogo, _from_mirror(d)) for d in _get(MIRROR.format(jogo, "").rstrip("/"), 60)]
         tem = have | {r[1] for r in rows}
+        try:   # o espelho costuma atrasar: o último concurso vem da Caixa e os que faltam entram como buracos
+            ultimo = fetch(jogo)
+            rows.append(_row(jogo, ultimo))
+            tem.add(ultimo["concurso"])
+        except Exception:
+            logging.getLogger("luckharness").warning("último concurso de %s indisponível", jogo, exc_info=True)
         faltam = [k for k in range(max(tem), 0, -1) if k not in tem][:MAX_BURACOS]
     except Exception:
         log("Espelho indisponível, buscando na Caixa (mais lento)...")

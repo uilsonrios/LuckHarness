@@ -666,6 +666,15 @@ class App(tk.Tk):
         self.o_obj.set(OBJETIVOS["frequente"]); self.o_obj.pack(side="left", padx=6)
         ttk.Button(r1, text="Otimizar", style="Accent.TButton", command=self.run_otim).pack(side="left", padx=6)
         ttk.Button(r1, text="Salvar cartões", style="Ghost.TButton", command=self.save_otim).pack(side="left")
+        r1b = ttk.Frame(f, style="Card.TFrame"); r1b.pack(fill="x", pady=(8, 0))
+        ttk.Label(r1b, text="Aposta mínima: até R$", style="Muted.TLabel").pack(side="left")
+        self.o_min = ttk.Entry(r1b, width=7); self.o_min.pack(side="left", padx=6)
+        self.o_min.insert(0, "6,00")
+        ttk.Label(r1b, text="prêmio de pelo menos", style="Muted.TLabel").pack(side="left")
+        self.o_alvo = ttk.Combobox(r1b, values=list(ALVOS), state="readonly", width=12)
+        self.o_alvo.set("R$ 10 mil"); self.o_alvo.pack(side="left", padx=6)
+        ttk.Button(r1b, text="Aposta mínima, prêmio maior", style="Accent.TButton",
+                   command=self.run_minima).pack(side="left", padx=6)
         r2 = ttk.Frame(f, style="Card.TFrame"); r2.pack(fill="x", pady=8)
         ttk.Button(r2, text="Treinar modelo de popularidade (jogo selecionado)", style="Ghost.TButton",
                    command=self.run_pop).pack(side="left")
@@ -801,37 +810,56 @@ class App(tk.Tk):
 
         def f():
             rk = otimizar(orc, obj)
-            b = rk[0]
-            self.otim_plan = b
-            j = b["jogo"]
-            if b["tipo"] == "simples":
-                cards, tv, p_esp, p_ale = comparar_cobertura(j, b["k"], b["n"])
-            else:
-                # dezenas do bolão/fechamento: as menos repetidas e menos populares
-                v = b.get("v", b["n"])
-                base = cartoes_espalhados(j, 1, v, pesos_popularidade(j))[0]
-                cards = ([base] if b["tipo"] == "bolão" else
-                         [sorted(base[x - 1] for x in c) for c in b["cards_base"]])
-                tv, p_esp, p_ale = None, None, None
-            extras = tv or extras_espalhados(j, len(cards))
-            self.otim_cards = [(j, c, t) for c, t in zip(cards, extras)]
-            linhas = [texto_plano(orc, obj, rk), "", f"Cartões sugeridos ({j}):"]
-            for i, (c, t) in enumerate(zip(cards, extras), 1):
-                fd = fator_divisao(j, c, t if j == "maismilionaria" else ())
-                linhas.append(f"  {i:>2}. {fmt_bet(j, c, t)}" + (f"   divisão do prêmio: {fd:.2f}x a média"
-                                                                   if fd else ""))
-            if p_esp is not None:
-                linhas += ["", f"Chance de pelo menos um cartão premiar nas dezenas (20.000 sorteios simulados): "
-                               f"{p_esp:.1%} com estes cartões x {p_ale:.1%} com cartões ao acaso."]
-            if b["tipo"] == "bolão":
-                linhas += ["", f"Bolão: registre o jogo de {b['n']} dezenas com {b['cotas']} cotas numa lotérica; "
-                               "'Salvar cartões' lança só o valor da sua cota na banca."]
-            if not pesos_popularidade(j) and j in POP_JOGOS:
-                linhas.append("Dica: treine o modelo de popularidade deste jogo para os cartões evitarem os "
-                              "números mais jogados.")
-            self.otim_txt = "\n".join(linhas)
-            return self.otim_txt
+            return self._mostra_plano(texto_plano(orc, obj, rk), rk[0])
         self.bg_otim(f)
+
+    def run_minima(self):
+        try:
+            orc = float(self.o_min.get().replace(",", "."))
+        except ValueError:
+            messagebox.showerror("Otimizador", "Valor da aposta mínima inválido.")
+            return
+        alvo = ALVOS[self.o_alvo.get()]
+
+        def f():
+            rk = aposta_minima(orc, alvo)
+            return self._mostra_plano(texto_aposta_minima(orc, alvo, rk), rk[0], cobertura=False)
+        self.bg_otim(f)
+
+    def _mostra_plano(self, texto, b, cobertura=True):
+        """Gera os cartões do plano escolhido, guarda para 'Salvar cartões' e monta o texto."""
+        self.otim_plan = b
+        j = b["jogo"]
+        p_esp = None
+        if b["tipo"] == "simples" and cobertura:
+            cards, tv, p_esp, p_ale = comparar_cobertura(j, b["k"], b["n"])
+        elif b["tipo"] == "simples":
+            cards, tv = cartoes_espalhados(j, b["k"], b["n"], pesos_popularidade(j)), None
+        else:
+            # dezenas do bolão/fechamento: as menos repetidas e menos populares
+            v = b.get("v", b["n"])
+            base = cartoes_espalhados(j, 1, v, pesos_popularidade(j))[0]
+            cards = ([base] if b["tipo"] == "bolão" else
+                     [sorted(base[x - 1] for x in c) for c in b["cards_base"]])
+            tv = None
+        extras = tv or extras_espalhados(j, len(cards))
+        self.otim_cards = [(j, c, t) for c, t in zip(cards, extras)]
+        linhas = [texto, "", f"Cartões sugeridos ({j}):"]
+        for i, (c, t) in enumerate(zip(cards, extras), 1):
+            fd = fator_divisao(j, c, t if j == "maismilionaria" else ())
+            linhas.append(f"  {i:>2}. {fmt_bet(j, c, t)}" + (f"   divisão do prêmio: {fd:.2f}x a média"
+                                                               if fd else ""))
+        if p_esp is not None:
+            linhas += ["", f"Chance de pelo menos um cartão premiar nas dezenas (20.000 sorteios simulados): "
+                           f"{p_esp:.1%} com estes cartões x {p_ale:.1%} com cartões ao acaso."]
+        if b["tipo"] == "bolão":
+            linhas += ["", f"Bolão: registre o jogo de {b['n']} dezenas com {b['cotas']} cotas numa lotérica; "
+                           "'Salvar cartões' lança só o valor da sua cota na banca."]
+        if not pesos_popularidade(j) and j in POP_JOGOS:
+            linhas.append("Dica: treine o modelo de popularidade deste jogo para os cartões evitarem os "
+                          "números mais jogados.")
+        self.otim_txt = "\n".join(linhas)
+        return self.otim_txt
 
     def run_teste(self):
         b = self.otim_plan

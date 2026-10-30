@@ -237,3 +237,37 @@ def test_cobertura_considera_sobreposicao_dos_cartoes():
     assert sim > o.prob_cartoes("lotofacil", pd, 10, extra=False) + 0.03
     simples = [x for x in o.opcoes(35, ["lotofacil"]) if x["tipo"] == "simples" and x["n"] == 15]
     assert simples[0]["p_dezenas"] == sim
+
+
+def test_bolao_segue_as_regras_da_caixa():
+    assert core.cotas_bolao("lotofacil", 16, 56, 6) == 10        # 10 cotas de R$ 5,60
+    assert core.cotas_bolao("lotofacil", 17, 476, 6) is None     # precisaria de 80 cotas: o máximo é 40
+    assert core.cotas_bolao("megasena", 8, 168, 6) is None       # cota mínima de R$ 8,00
+    assert core.cotas_bolao("megasena", 8, 168, 10) == 17
+    assert core.cotas_bolao("megasena", 6, 6, 6) is None         # uma aposta mínima sozinha não vira bolão
+    for j in core.BOLAO:
+        for b in o._opcoes_bolao(j, 30, None):
+            cota_min, maximo = core.BOLAO[j][b["n"]]
+            assert 2 <= b["cotas"] <= maximo and cota_min - 1e-9 <= b["gasto"] <= 30
+
+
+MEDIANAS = {"lotofacil": {"15 acertos": 1_500_000, "14 acertos": 1800, "13 acertos": 35, "12 acertos": 14,
+                          "11 acertos": 7},
+            "megasena": {"6 acertos": 50_000_000, "5 acertos": 45_000, "4 acertos": 1000}}
+
+
+def test_aposta_minima_mira_o_premio_escolhido(monkeypatch):
+    monkeypatch.setattr(o, "premios_medios", lambda j, n=100: (MEDIANAS.get(j, {}), {}))
+    monkeypatch.setattr(o, "valor_esperado", lambda j: {"retorno": 0.4})
+    # R$ 3,50 e prêmio de R$ 1 mil: só a Lotofácil cabe, e chega lá com 14 ou 15 acertos
+    rk = o.aposta_minima(3.5, 1000)
+    assert [r["jogo"] for r in rk] == ["lotofacil"]
+    assert rk[0]["h_min"] == "14+" and rk[0]["p"] == pytest.approx(151 / 3_268_760)
+    # R$ 1 milhão com até R$ 10: 1/17 de um bolão de 8 dezenas da Mega tem 28 vezes a chance da aposta simples
+    # (com 9 dezenas seriam 51 cotas e a parte da sena não chega a R$ 1 milhão)
+    mega = next(r for r in o.aposta_minima(10, 1e6) if r["jogo"] == "megasena")
+    assert (mega["tipo"], mega["n"], mega["cotas"]) == ("bolão", 8, 17)
+    assert mega["p"] == pytest.approx(28 / 50_063_860)
+    assert "APOSTA MÍNIMA" in o.texto_aposta_minima(10, 1e6, [mega])
+    with pytest.raises(ValueError):
+        o.aposta_minima(3.5, 1e9)

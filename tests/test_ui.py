@@ -132,3 +132,15 @@ def test_assistente_salva_preferencias(app):
     pr = core.load_prefs()
     assert pr["jogo"] == "quina" and pr["orcamento"] == 25 and pr["limite_ui_teste"] == 200
     assert pr["assistente_ui_teste"] and app.jogo.get() == "quina"
+
+
+def test_aposta_minima_gera_cartoes(app, monkeypatch):
+    import otimizador as o
+    monkeypatch.setattr(o, "premios_medios", lambda j, n=100: (
+        {"14 acertos": 1800, "15 acertos": 1_500_000, "13 acertos": 35} if j == "lotofacil" else {}, {}))
+    app.o_min.delete(0, "end"); app.o_min.insert(0, "3,50")
+    app.o_alvo.set("R$ 1 mil")
+    app.run_minima()
+    txt = _espera(app, app.o_out)
+    assert "APOSTA MÍNIMA" in txt and "lotofacil" in txt
+    assert len(app.otim_cards) == 1 and app.otim_plan["jogo"] == "lotofacil"

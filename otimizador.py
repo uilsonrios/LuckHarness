@@ -9,8 +9,8 @@ import json, math, os, random, re, threading
 
 from collections import Counter
 
-from core import (DATA, EXTRA, JOGOS, MAX_DEZ, MESES, _sorteios, brl, custo, db, historico_retorno, hypergeom, log,
-                  premio, premios_medios, prob_faixa, valor_esperado)
+from core import (BOLAO, DATA, EXTRA, IR, IR_ISENTO, JOGOS, MAX_DEZ, MESES, _sorteios, brl, cotas_bolao, custo, db,
+                  historico_retorno, hypergeom, log, premio, premios_medios, prob_faixa, valor_esperado)
 
 OBJETIVOS = {"frequente": "ganhar algum prêmio com mais frequência",
              "grande": "maior chance do prêmio principal",
@@ -124,14 +124,12 @@ def opcoes(orcamento, jogos=None):
 def _opcoes_bolao(j, orcamento, ret):
     """Uma cota por semana de um bolão com mais dezenas. Divide custo e prêmio: a chance de o bolão premiar é
     a da aposta grande inteira, mas você recebe 1/cotas de cada prêmio."""
-    if j == "supersete":
-        return []
-    mn, out = JOGOS[j][2], []
-    for n in range(mn + 1, MAX_DEZ[j] + 1):
+    out = []
+    for n in sorted(BOLAO.get(j, {})):
         c = custo(j, list(range(1, n + 1)), [1, 2] if j == "maismilionaria" else [])
-        q = max(2, math.ceil(c / orcamento))
-        if q > 100:   # limite prático de cotas
-            break
+        q = cotas_bolao(j, n, c, orcamento)   # regras da Caixa: cota mínima e máximo de cotas
+        if not q:
+            continue
         out.append({"jogo": j, "tipo": "bolão", "n": n, "k": 1, "cotas": q, "custo": c, "gasto": c / q,
                     "p_semana": prob_premio(j, n), "p_dezenas": prob_premio(j, n, extra=False), "p_principal_ano": 1 - (1 - prob_principal(j, n) / q) ** 52,
                     "retorno": ret, "plano": f"bolão {n} dez., 1/{q} cota"})
@@ -229,6 +227,117 @@ def texto_plano(orcamento, objetivo, ranking):
             "Bolão: 'Principal/ano' é o equivalente à sua cota (o bolão ganha mais vezes, mas você recebe só a "
             "sua parte).",
             "Nenhum plano aumenta a chance de cada cartão nem garante lucro: ele tira o máximo de cada real."]
+    return "\n".join(out)
+
+
+# ---------------- aposta mínima, prêmio maior ----------------
+ALVOS = {"R$ 1 mil": 1e3, "R$ 10 mil": 1e4, "R$ 100 mil": 1e5, "R$ 1 milhão": 1e6}
+
+
+def _liquido(v):
+    return v * (1 - IR) if v > IR_ISENTO else v
+
+
+def _pagamento(jogo, n, h, th, med):
+    """Quanto um cartão de n dezenas com h acertos (e th trevos) recebe, com os valores típicos pagos."""
+    N, K, mn, fx, _ = JOGOS[jogo]
+    pr = list(med.items())
+    if jogo == "supersete":
+        p = premio(jogo, h, 0, pr) if h in fx else None
+        return _liquido(p[1]) if p and p[1] else 0.0
+    tot = 0.0
+    for j in fx:
+        qtd = math.comb(h, j) * math.comb(n - h, mn - j)
+        p = premio(jogo, j, th, pr) if qtd else None
+        if p and p[1]:
+            tot += qtd * _liquido(p[1])
+    return tot
+
+
+def _chance_alvo(jogo, n, alvo, med, cotas=1):
+    """P(um cartão de n dezenas pagar pelo menos 'alvo' para quem tem 1 de 'cotas' partes) e o menor número de
+    acertos que chega lá."""
+    N, K, mn, fx, _ = JOGOS[jogo]
+    ths = _p_trevos(2) if jogo == "maismilionaria" else {0: 1.0}
+    p, acertos = 0.0, set()
+    for h in range(0, (7 if jogo == "supersete" else min(n, K)) + 1):
+        ph = prob_faixa(jogo, h) if jogo == "supersete" else hypergeom(N, K, n, h)
+        for th, pt in ths.items():
+            if _pagamento(jogo, n, h, th, med) / cotas >= alvo:
+                p += ph * pt
+                acertos.add(h)
+    if jogo == "duplasena":
+        p = 1 - (1 - p) ** 2
+    altos = sorted(h for h in acertos if h)
+    txt = ((f"{altos[0]}+" if altos[0] < (7 if jogo == "supersete" else K) else str(altos[0])) if altos else "")
+    if 0 in acertos:   # Lotomania paga quem erra todos
+        txt = f"{txt} ou 0" if txt else "0"
+    return p, txt
+
+
+def aposta_minima(orcamento, alvo):
+    """Para cada jogo, a forma de gastar até 'orcamento' com mais chance de receber pelo menos 'alvo' de uma vez:
+    cartões simples (os mais baratos ou com mais dezenas) ou uma cota de bolão. Usa os prêmios típicos pagos
+    nos últimos 300 concursos, já sem o IR."""
+    if orcamento <= 0:
+        raise ValueError("Informe quanto quer gastar.")
+    out = []
+    for j in JOGOS:
+        N, K, mn, fx, preco = JOGOS[j]
+        med = premios_medios(j, 300)[0]
+        if not med:
+            continue
+        tv = [1, 2] if j == "maismilionaria" else []
+        cands = []
+        for n in range(mn, (mn if j == "supersete" else MAX_DEZ[j]) + 1):
+            c = custo(j, list(range(1, n + 1)), tv)
+            if c <= orcamento:
+                k = int(orcamento // c)
+                p1, h = _chance_alvo(j, n, alvo, med)
+                cands.append({"jogo": j, "tipo": "simples", "n": n, "k": k, "custo": c, "gasto": k * c,
+                              "p": 1 - (1 - p1) ** k, "h_min": h, "plano": f"{k} cartão(ões) de {n}"})
+            else:
+                q = cotas_bolao(j, n, c, orcamento)
+                if not q:
+                    continue
+                p1, h = _chance_alvo(j, n, alvo, med, q)
+                cands.append({"jogo": j, "tipo": "bolão", "n": n, "k": 1, "cotas": q, "custo": c, "gasto": c / q,
+                              "p": p1, "h_min": h, "plano": f"bolão {n} dez., 1/{q} cota"})
+        cands = [x for x in cands if x["p"] > 0]
+        if cands:
+            b = max(cands, key=lambda x: (x["p"], -x["gasto"]))
+            try:
+                b["retorno"] = valor_esperado(j)["retorno"]
+            except Exception:
+                b["retorno"] = None
+            out.append(b)
+    if not out:
+        raise ValueError(f"Com {brl(orcamento)} nenhum jogo costuma pagar {brl(alvo)} de uma vez.")
+    return sorted(out, key=lambda x: -x["p"])
+
+
+def texto_aposta_minima(orcamento, alvo, ranking):
+    def anos(p):
+        a = 1 / p / 52
+        return f"{a:,.0f} anos".replace(",", ".") if a >= 1.5 else f"{a * 52:.0f} semanas"
+    out = [f"=== APOSTA MÍNIMA, PRÊMIO MAIOR: até {brl(orcamento)} por concurso, prêmio de pelo menos "
+           f"{brl(alvo)} de uma vez ===", "",
+           f"{'#':<3}{'Jogo':<15}{'Aposta':<27}{'Gasto':>10}{'Chance':>17}   {'Jogando 1 vez por semana':<28}"
+           "Acertos"]
+    for i, o in enumerate(ranking, 1):
+        out.append(f"{i:<3}{o['jogo']:<15}{o['plano']:<27}{brl(o['gasto']):>10}{_um_em(o['p']):>17}   "
+                   f"{'1 vez a cada ' + anos(o['p']):<28}{o['h_min']}")
+    b = ranking[0]
+    out += ["", f"Melhor chance: {b['jogo']}, {b['plano']} ({brl(b['gasto'])})."]
+    if b["tipo"] == "bolão":
+        out.append(f"No bolão a aposta grande inteira concorre e você recebe 1/{b['cotas']} do prêmio: a chance acima "
+                   f"já conta só os prêmios em que a sua parte chega a {brl(alvo)}. Cotas e valores seguem as regras "
+                   "de bolão da Caixa; cota pronta comprada na lotérica pode custar até 35% a mais (tarifa).")
+    out += ["",
+            "Os valores são os prêmios típicos pagos nos últimos 300 concursos (mediana), já sem o IR. Prêmio "
+            "principal e faixas altas variam muito: acumulados pagam mais e prêmios divididos pagam menos.",
+            "Gastar o mínimo não muda a chance de cada cartão: o que muda é qual jogo e qual formato, e é isso que a "
+            "tabela compara. Números pouco jogados (modelo de popularidade) dividem menos as faixas altas."]
     return "\n".join(out)
 
 
