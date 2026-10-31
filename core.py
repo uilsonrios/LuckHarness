@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.14.1"
+__version__ = "1.14.2"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -218,6 +218,18 @@ def fetch(jogo, concurso=""):
                            f"  Caixa: {e1}\n  Espelho: {e2}") from None
 
 
+def ultimo_resultado(jogo):
+    """Último concurso: pergunta aos dois servidores da Caixa e fica com o mais novo (um deles às vezes fica um
+    concurso atrás). Sem a Caixa, usa o espelho."""
+    achados = []
+    for url in CAIXA:
+        try:
+            achados.append(_from_caixa(_get(url.format(jogo, ""))))
+        except Exception:
+            logging.getLogger("luckharness").warning("último %s indisponível em %s", jogo, url, exc_info=True)
+    return max(achados, key=lambda d: d["concurso"]) if achados else fetch(jogo)
+
+
 def _row(jogo, d):
     # dupla sena traz os dois sorteios juntos; usa só o primeiro. Super Sete fica na ordem das colunas.
     K = JOGOS[jogo][1]
@@ -245,7 +257,7 @@ def sync_draws(jogo, n=50, log=print):
         rows = [_row(jogo, _from_mirror(d)) for d in _get(MIRROR.format(jogo, "").rstrip("/"), 60)]
         tem = have | {r[1] for r in rows}
         try:   # o espelho costuma atrasar: o último concurso vem da Caixa e os que faltam entram como buracos
-            ultimo = fetch(jogo)
+            ultimo = ultimo_resultado(jogo)
             rows.append(_row(jogo, ultimo))
             tem.add(ultimo["concurso"])
         except Exception:
@@ -253,7 +265,7 @@ def sync_draws(jogo, n=50, log=print):
         faltam = [k for k in range(max(tem), 0, -1) if k not in tem][:MAX_BURACOS]
     except Exception:
         log("Espelho indisponível, buscando na Caixa (mais lento)...")
-        last = fetch(jogo)
+        last = ultimo_resultado(jogo)
         num = last["concurso"]
         rows = [_row(jogo, last)]
         faltam = [k for k in range(num - 1, max(0, num - n), -1) if k not in have]

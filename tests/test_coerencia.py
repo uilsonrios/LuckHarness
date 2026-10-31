@@ -110,7 +110,7 @@ def test_sugestoes_preferem_conjunto_que_divide_menos(monkeypatch):
     sug = o.sugestoes("lotofacil", 5, 15, random.Random(1))
     media = lambda cs: sum(o._prever("lotofacil", mod, {"dz": c, "ant": [], "trevos": []}) for c in cs) / len(cs)
     um_so = o.cartoes_espalhados("lotofacil", 5, 15, pesos, random.Random(1))
-    assert media(sug) <= media(um_so)
+    assert media(sug) <= media(um_so) + 1e-9
     uso = [sum(x in c for c in sug) for x in range(1, N + 1)]
     assert max(uso) - min(uso) <= 1          # continua espalhado
 

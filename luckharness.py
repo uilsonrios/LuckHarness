@@ -853,11 +853,11 @@ class App(tk.Tk):
         if b["tipo"] == "simples" and cobertura:
             cards, tv, p_esp, p_ale = comparar_cobertura(j, b["k"], b["n"])
         elif b["tipo"] == "simples":
-            cards, tv = cartoes_espalhados(j, b["k"], b["n"], pesos_popularidade(j)), None
+            cards, tv = sugestoes(j, b["k"], b["n"]), None
         else:
             # dezenas do bolão/fechamento: as menos repetidas e menos populares
             v = b.get("v", b["n"])
-            base = cartoes_espalhados(j, 1, v, pesos_popularidade(j))[0]
+            base = sugestoes(j, 1, v)[0]
             cards = ([base] if b["tipo"] == "bolão" else
                      [sorted(base[x - 1] for x in c) for c in b["cards_base"]])
             tv = None

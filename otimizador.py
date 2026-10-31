@@ -474,7 +474,8 @@ VOLANTE = {"megasena": 10, "quina": 10, "duplasena": 10, "timemania": 10, "lotof
            "lotomania": 10, "maismilionaria": 10}
 PADROES = ["até 31 (datas)", "todos até 31", "maior sequência", "vizinhos", "mesma linha do volante",
            "mesma coluna do volante", "mesma dezena", "múltiplos de 5", "progressão aritmética",
-           "repetidos do concurso anterior", "soma fora do centro", "desequilíbrio par/ímpar", "espalhamento"]
+           "repetidos do concurso anterior", "soma fora do centro", "desequilíbrio par/ímpar", "espalhamento",
+           "até 12 (meses)", "mesmo final", "borda do volante", "vizinhos do anterior"]
 LAMBDAS = (3.0, 10.0, 30.0, 100.0, 300.0, 1000.0)
 
 
@@ -530,10 +531,14 @@ def _padroes(jogo, dz, anterior):
     dp = math.sqrt(n * (N - n) * (N + 1) / 12) or 1
     pares = sum(x % 2 == 0 for x in s)
     esp_dif = (N + 1) / (n + 1)
+    ant = set(anterior)
     return [datas, float(datas == 1.0), best / n, sum(d == 1 for d in difs) / n, max(linhas.values()) / n,
             max(colunas.values()) / n, max(dezenas.values()) / n, sum(x % 5 == 0 for x in s) / n,
             float(len(set(difs)) == 1), len(set(s) & set(anterior)) / n, abs(sum(s) - media) / dp,
-            abs(pares - n / 2) / n, (sum((d - esp_dif) ** 2 for d in difs) / max(1, len(difs))) ** 0.5 / esp_dif]
+            abs(pares - n / 2) / n, (sum((d - esp_dif) ** 2 for d in difs) / max(1, len(difs))) ** 0.5 / esp_dif,
+            sum(x <= 12 for x in s) / n if N > 12 else 0.0, max(Counter(x % 10 for x in s).values()) / n,
+            sum((x - 1) // cols in (0, (N - 1) // cols) or (x - 1) % cols in (0, cols - 1) for x in s) / n,
+            sum((x - 1 in ant or x + 1 in ant) and x not in ant for x in s) / n]
 
 
 def _base(jogo):
@@ -634,8 +639,9 @@ def _entradas(jogo, dados, cfg, norm=None):
     """Entradas esparsas [(índice, valor)] por exemplo; padrões padronizados com média/desvio do treino."""
     B = _base(jogo)
     com_pad = cfg["padroes"] and jogo != "supersete"
-    feats = [_padroes(jogo, a["dz"], a["ant"]) for a in dados] if com_pad else []
-    F = len(PADROES) if com_pad else 0
+    # modelos salvos antes dos padrões novos usam só os primeiros (os novos foram acrescentados no fim)
+    F = (len(norm[0]) if norm is not None else len(PADROES)) if com_pad else 0
+    feats = [_padroes(jogo, a["dz"], a["ant"])[:F] for a in dados] if com_pad else []
     if norm is None:
         med = [sum(f[i] for f in feats) / len(feats) for i in range(F)]
         dp = [max(1e-9, (sum((f[i] - med[i]) ** 2 for f in feats) / len(feats)) ** 0.5) for i in range(F)]
@@ -765,11 +771,11 @@ def _prever(jogo, mod, a):
 
 # janela: treinar só com os últimos N concursos (o gosto do público muda; na curva de aprendizado ~500-1000
 # concursos recentes renderam mais que o histórico inteiro em vários jogos)
-CONFIGS = [{"nome": f"{m}|{al}|{'padrões' if p else 'números'}|{'recentes' if mv else 'todos'}"
-                    + (f"|últimos {jn}" if jn else ""),
+CONFIGS = [{"nome": f"{m}|{al}|{'padrões' if p else 'números'}|"
+                    + (f"recentes (meia-vida {mv})" if mv else "todos") + (f"|últimos {jn}" if jn else ""),
             "modelo": m, "alvo": al, "padroes": p, "meia_vida": mv, "janela": jn}
-           for m in ("ridge",) for al in ("baixa", "multi") for p in (False, True) for mv in (0, 500)
-           for jn in (0, 1000)]
+           for m in ("ridge",) for al in ("baixa", "multi") for p in (False, True) for mv in (0, 250, 500)
+           for jn in (0, 500, 1000)]
 
 
 def treinar_popularidade(jogo, teste=0.2, rapido=False):
@@ -1317,20 +1323,82 @@ def sugestoes(jogo, qtd=5, n=None, rng=None):
         nota = (sum(fs) / len(fs), max(fs))
         if nota_melhor is None or nota < nota_melhor:
             melhor, nota_melhor = cs, nota
-    return melhor
+    return _menos_divididos(jogo, melhor, m, rng)
 
 
-TENTATIVAS_SUGESTAO = 60
+TENTATIVAS_SUGESTAO = 20
+TROCAS_SUGESTAO = 2000
+
+
+def _sobreposicao(cs):
+    s = [len(set(a) & set(b)) for i, a in enumerate(cs) for b in cs[i + 1:]]
+    return max(s, default=0), sum(x * x for x in s)
+
+
+def _menos_divididos(jogo, cs, m, rng, trocas=TROCAS_SUGESTAO):
+    """Busca local: troca um número de um cartão por outro sem mexer na cobertura (o uso de cada número continua
+    equilibrado e a sobreposição entre cartões não piora) e aceita a troca quando o conjunto divide menos o
+    prêmio (pior cartão + média). As tentativas de 'sugestoes' quase sempre saem iguais quando há pesos, então
+    é esta busca que de fato escolhe os números menos jogados."""
+    N = JOGOS[jogo][0]
+    ant = m.get("anterior", [])
+    cs = [sorted(c) for c in cs]
+    fs = [_prever(jogo, m, {"dz": c, "ant": ant, "trevos": []}) for c in cs]
+    uso = Counter(x for c in cs for x in c)
+    for x in range(1, N + 1):
+        uso.setdefault(x, 0)
+    faixa = max(uso.values()) - min(uso.values())
+    sob = _sobreposicao(cs)
+    nota = max(fs) + sum(fs) / len(fs)
+    def prev(c):
+        return _prever(jogo, m, {"dz": c, "ant": ant, "trevos": []})
+
+    for _ in range(trocas):
+        i = rng.randrange(len(cs))
+        x = rng.choice(cs[i])
+        if len(cs) > 1 and rng.random() < 0.5:
+            # troca entre dois cartões: x vai de i para j e y de j para i (o uso de cada número não muda)
+            j = rng.randrange(len(cs) - 1)
+            j += j >= i
+            y = rng.choice(cs[j])
+            if y in cs[i] or x in cs[j]:
+                continue
+            mud = {i: sorted(y if v == x else v for v in cs[i]), j: sorted(x if v == y else v for v in cs[j])}
+            dif = None
+        else:
+            # troca por um número de fora do cartão, mantendo o uso dos números equilibrado
+            y = rng.randrange(1, N + 1)
+            if y in cs[i]:
+                continue
+            uso[x] -= 1; uso[y] += 1
+            if max(uso.values()) - min(uso.values()) > faixa:
+                uso[x] += 1; uso[y] -= 1
+                continue
+            mud, dif = {i: sorted(y if v == x else v for v in cs[i])}, (x, y)
+        teste = [mud.get(t, c) for t, c in enumerate(cs)]
+        s = _sobreposicao(teste)
+        fs2 = [prev(mud[t]) if t in mud else f for t, f in enumerate(fs)]
+        n2 = max(fs2) + sum(fs2) / len(fs2)
+        if s[0] <= sob[0] and s[1] <= sob[1] and n2 < nota - 1e-12:
+            cs, fs, nota, sob = teste, fs2, n2, s
+        elif dif:
+            uso[dif[0]] += 1; uso[dif[1]] -= 1
+    return cs
 
 
 TESTADO_NAO_FUNCIONA = (
     "Testado com os resultados reais e SEM efeito (igual ao acaso): números quentes, frios/atrasados, repetir o "
     "último resultado, rede neural de previsão, 'aprender com erros e acertos' e treino por tentativa e erro "
-    "(mais de 5.000 concursos, testes cegos com impressão digital). Nenhum método prevê os números sorteados.")
+    "(mais de 5.000 concursos, testes cegos com impressão digital). Redes grandes com treino pesado (1.000 "
+    "concursos de teste por jogo) também empataram com o acaso, embora achem um padrão plantado em sorteios "
+    "simulados: o problema não é a rede, é que não há padrão. A ordem em que as bolas saem (Mega-Sena, 3.079 "
+    "concursos) também é aleatória. Nenhum método prevê os números sorteados.")
 TESTADO_FUNCIONA = (
     "Testado e COM efeito: escolher o jogo pela chance de prêmio por real; cartões espalhados (mais concursos "
     "com prêmio pelo mesmo gasto); time/mês/trevos sem repetir entre cartões; números pouco jogados pelo público "
-    "(não mudam a chance, mas dividem menos o prêmio); fechamentos com garantia condicional.")
+    "(não mudam a chance, mas dividem menos o prêmio); fechamentos com garantia condicional; cota de bolão "
+    "para mirar um valor de prêmio gastando pouco (Otimizador, 'Aposta mínima, prêmio maior'); jogar quando o "
+    "prêmio anunciado está alto devolve mais por real (Mega e Quina quase dobram, mas seguem abaixo de 100%).")
 
 
 def fatos_app(jogo):

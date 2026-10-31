@@ -271,3 +271,18 @@ def test_aposta_minima_mira_o_premio_escolhido(monkeypatch):
     assert "APOSTA MÍNIMA" in o.texto_aposta_minima(10, 1e6, [mega])
     with pytest.raises(ValueError):
         o.aposta_minima(3.5, 1e9)
+
+
+def test_cartoes_dividem_menos_sem_perder_cobertura(monkeypatch):
+    # modelo de mentira: quanto maiores os números, mais "popular" o cartão
+    monkeypatch.setattr(o, "_prever", lambda j, m, a: sum(a["dz"]) / 100)
+    for jogo, k in (("megasena", 5), ("lotofacil", 4)):
+        base = o.cartoes_espalhados(jogo, k, rng=random.Random(3))
+        novos = o._menos_divididos(jogo, base, {}, random.Random(4))
+        uso = [sum(x in c for c in novos) for x in range(1, o.JOGOS[jogo][0] + 1)]
+        uso0 = [sum(x in c for c in base) for x in range(1, o.JOGOS[jogo][0] + 1)]
+        assert max(uso) - min(uso) <= max(uso0) - min(uso0)          # números usados por igual, como antes
+        s, s0 = o._sobreposicao(novos), o._sobreposicao(base)
+        assert s[0] <= s0[0] and s[1] <= s0[1]                       # cartões não ficam mais parecidos
+        assert all(len(set(c)) == o.JOGOS[jogo][2] for c in novos)
+        assert sum(map(sum, novos)) < sum(map(sum, base))            # e o conjunto divide menos o prêmio

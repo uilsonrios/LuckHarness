@@ -290,3 +290,12 @@ def test_simular_soma_mes_da_sorte_com_as_faixas(monkeypatch):
     monkeypatch.setattr(core, "valor_esperado", lambda j: r)
     m = core.simular("diadesorte", 2.5, 1, n_sim=5)
     assert m["mediana"] == 52 * (5.0 + 2.5) - 52 * 2.5
+
+
+def test_ultimo_resultado_fica_com_o_servidor_mais_novo(monkeypatch):
+    # em 31/10/2026 o servicebus2 ainda dizia 3817 e o servicebus3 já tinha o 3818
+    def get(url, timeout=15):
+        n = 3817 if "servicebus2" in url else 3818
+        return {"numero": n, "listaDezenas": [f"{x:02d}" for x in range(1, 16)]}
+    monkeypatch.setattr(core, "_get", get)
+    assert core.ultimo_resultado("lotofacil")["concurso"] == 3818
