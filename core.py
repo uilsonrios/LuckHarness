@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.16.1"
+__version__ = "1.16.2"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -95,6 +95,10 @@ BOLAO = {
                    13: (42.90, 60), 14: (85.80, 100), 15: (160.88, 100)},
     "duplasena": {7: (3.00, 50), 8: (3.00, 50), 9: (5.04, 50), 10: (12.60, 50), 11: (27.72, 50),
                   12: (55.44, 50), 13: (102.96, 50), 14: (180.18, 50), 15: (300.30, 50)},
+    # Super Sete: n = total de números (formatos oficiais; com 8 números o bolão exige mais de uma aposta)
+    "supersete": {9: (3.00, 20), 10: (3.00, 40), 11: (3.00, 50), 12: (3.00, 100), 13: (3.00, 100), 14: (3.84, 100),
+                  15: (5.76, 100), 16: (8.64, 100), 17: (10.80, 100), 18: (16.20, 100), 19: (24.30, 100),
+                  20: (36.45, 100), 21: (54.68, 100)},
     "maismilionaria": {7: (6.00, 98), 8: (6.00, 100), 9: (6.00, 100), 10: (12.60, 100), 11: (27.72, 100),
                        12: (55.44, 100)},
 }

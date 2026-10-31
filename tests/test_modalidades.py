@@ -165,3 +165,23 @@ def test_proximo_sorteio_usa_a_data_oficial():
     assert "data oficial da Caixa" in core.texto_calendario(date(2026, 10, 30))
     # data oficial já passou (resultado ainda não baixado): volta ao calendário de dias habituais
     assert core.proximo_sorteio("timemania", date(2026, 11, 3)).weekday() in core.DIAS_SORTEIO["timemania"]
+
+
+def test_bolao_da_super_sete_pelas_regras_oficiais():
+    assert core.cotas_bolao("supersete", 8, 6.0, 3) is None             # com 8 números o bolão exige mais apostas
+    assert core.cotas_bolao("supersete", 14, 384.0, 4) == 96            # cota mínima R$ 3,84, até 100 cotas
+    assert core.cotas_bolao("supersete", 14, 384.0, 3) is None          # 128 cotas passaria do máximo de 100
+    bol = [r for r in o.opcoes(30, ["supersete"]) if r["tipo"] == "bolão"]
+    assert bol and all(r["gasto"] <= 30 and r["tamanhos"] for r in bol)
+
+
+def test_registro_mostra_00_na_lotomania(monkeypatch):
+    monkeypatch.setattr(lab, "extras_acompanhamento", lambda jogo, pular=(): {})
+    with core.db() as c:
+        c.execute("DELETE FROM draws WHERE jogo='lotomania'")
+    import random
+    rng = random.Random(2)
+    for i in range(1, 260):
+        _grava("lotomania", i, ["00"] + [f"{x:02d}" for x in rng.sample(range(1, 100), 19)])
+    txt = lab.registrar_proximo("lm00", "lotomania", ["frios"])
+    assert " 100" not in txt.replace("100%", "")

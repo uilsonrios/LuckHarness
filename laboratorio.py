@@ -367,7 +367,7 @@ def registrar_proximo(user, jogo, estrategias=None, minha=None):
     out = [f"=== REGISTRADO: {jogo.upper()}, concurso {alvo} (ainda não sorteado) ===",
            f"Registrado em {criado} | impressão digital: {selo[:16]}…", ""]
     for n, cs in a.items():
-        out.append(f"  {n:<16} " + (" | ".join(" ".join(f"{x:02d}" for x in c) for c in cs[:3])
+        out.append(f"  {n:<16} " + (" | ".join(fmt_bet(jogo, c, []) for c in cs[:3])
                                     + (f" … (+{len(cs) - 3} cartões)" if len(cs) > 3 else "")))
     out += ["", "Depois do sorteio, baixe os resultados e clique em 'Conferir registros'."]
     return "\n".join(out)

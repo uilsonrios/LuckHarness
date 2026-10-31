@@ -176,9 +176,17 @@ def _opcoes_bolao(j, orcamento, ret):
     a da aposta grande inteira, mas você recebe 1/cotas de cada prêmio."""
     out = []
     for n in sorted(BOLAO.get(j, {})):
-        c = custo(j, list(range(1, n + 1)), [1, 2] if M[j].get("trevos") else [])
+        tam = formatos_supersete()[n] if M[j].get("colunas") else None
+        c = JOGOS[j][4] * math.prod(tam) if tam else custo(j, list(range(1, n + 1)), [1, 2] if M[j].get("trevos") else [])
         q = cotas_bolao(j, n, c, orcamento)   # regras da Caixa: cota mínima e máximo de cotas
         if not q:
+            continue
+        if tam:   # Super Sete: conta exata pelos padrões de colunas
+            p_dz = sum(pp for pp, d in padroes_supersete(tam) if any(d[h] for h in JOGOS[j][3]))
+            out.append({"jogo": j, "tipo": "bolão", "n": n, "k": 1, "cotas": q, "custo": c, "gasto": c / q,
+                        "p_semana": p_dz, "p_dezenas": p_dz, "tamanhos": tam, "retorno": ret,
+                        "p_principal_ano": 1 - (1 - math.prod(t / 10 for t in tam) / q) ** 52,
+                        "plano": f"bolão {n} números, 1/{q} cota"})
             continue
         out.append({"jogo": j, "tipo": "bolão", "n": n, "k": 1, "cotas": q, "custo": c, "gasto": c / q,
                     "p_semana": prob_premio(j, n), "p_dezenas": prob_premio(j, n, extra=False), "p_principal_ano": 1 - (1 - prob_principal(j, n) / q) ** 52,
@@ -343,17 +351,21 @@ def aposta_minima(orcamento, alvo):
             if M[j].get("colunas") and n > mn:
                 tam = formatos_supersete()[n]
                 c = preco * math.prod(tam)
-                if c > orcamento:
-                    break
-                k = int(orcamento // c)
+                cotas = 1 if c <= orcamento else cotas_bolao(j, n, c, orcamento)
+                if not cotas:
+                    continue
+                k = int(orcamento // c) if cotas == 1 else 1
                 ok = [(pp, d) for pp, d in padroes_supersete(tam)
-                      if sum(q * _pagamento(j, 7, h, 0, med) for h, q in enumerate(d)) >= alvo]
+                      if sum(q * _pagamento(j, 7, h, 0, med) for h, q in enumerate(d)) / cotas >= alvo]
                 p1 = sum(pp for pp, _ in ok)
                 hs = [min(h for h, q in enumerate(d) if q and _pagamento(j, 7, h, 0, med)) for _, d in ok
                       if any(q and _pagamento(j, 7, h, 0, med) for h, q in enumerate(d))]
-                cands.append({"jogo": j, "tipo": "simples", "n": n, "k": k, "custo": c, "gasto": k * c,
-                              "p": 1 - (1 - p1) ** k, "h_min": f"{min(hs)}+" if hs else "", "tamanhos": tam,
-                              "plano": f"{k} aposta(s) de {n} números"})
+                base = {"jogo": j, "n": n, "custo": c, "p": 1 - (1 - p1) ** k, "h_min": f"{min(hs)}+" if hs else "",
+                        "tamanhos": tam}
+                cands.append({**base, "tipo": "simples", "k": k, "gasto": k * c, "plano": f"{k} aposta(s) de {n} números"}
+                             if cotas == 1 else
+                             {**base, "tipo": "bolão", "k": 1, "cotas": cotas, "gasto": c / cotas,
+                              "plano": f"bolão {n} números, 1/{cotas} cota"})
                 continue
             c = custo(j, list(range(1, n + 1)), tv)
             if c <= orcamento:
