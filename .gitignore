@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+
+# logs das baterias de experimentos (os resultados .json ficam versionados)
+experimentos/aprendizado/*.log

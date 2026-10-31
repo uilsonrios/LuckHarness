@@ -41,7 +41,7 @@ def _espera(app, widget, timeout=20):
 
 def test_todas_as_abas_abrem(app):
     nomes = [app.nb.tab(i, "text") for i in range(app.nb.index("end"))]
-    assert {"Análise", "Minhas apostas", "Otimizador", "Retorno", "Laboratório"} <= set(nomes)
+    assert {"Hoje", "Análise", "Minhas apostas", "Otimizador", "Retorno", "Laboratório"} <= set(nomes)
     for i in range(len(nomes)):
         app.nb.select(i)
         app.update()

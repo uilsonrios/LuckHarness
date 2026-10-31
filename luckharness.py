@@ -306,6 +306,7 @@ class App(tk.Tk):
         self.out.tag_configure("head", foreground=ACCENT, font=("Consolas", 11, "bold"))
         self.out.tag_configure("err", foreground="#ff6b6b")
         self.build_semana()
+        self.build_hoje()
         self.nb.add(self.out, text="Análise")
         self.build_charts()
         self.build_bets()
@@ -359,6 +360,37 @@ class App(tk.Tk):
         f = ttk.Frame(self.nb, style="Card.TFrame", padding=12)
         self.nb.add(f, text=title)
         return f
+
+    def build_hoje(self):
+        """Resultados do dia (o que saiu, o que acumulou, próximo prêmio) e a rede neural ao vivo: apostas de
+        todas as estratégias registradas com selo antes de cada sorteio e o placar quando o resultado sai."""
+        f = self.tab("Hoje")
+        row = ttk.Frame(f, style="Card.TFrame"); row.pack(fill="x", pady=(0, 8))
+        ttk.Button(row, text="Atualizar agora", style="Accent.TButton",
+                   command=lambda: self.atualizar_hoje(baixar=True)).pack(side="left")
+        ttk.Label(row, style="Muted.TLabel", text="  Atualiza sozinho ao abrir o app. A rede aposta antes do sorteio; "
+                                                  "o placar mostra se ela acerta mais que o acaso.").pack(side="left")
+        self.h_out = text_box(f, wrap="word", font=("Consolas", 10)); self.h_out.pack(fill="both", expand=True)
+        try:
+            self.h_out.insert("end", resumo_do_dia())
+        except Exception:
+            log.warning("resumo do dia", exc_info=True)
+
+    def atualizar_hoje(self, baixar=False):
+        def f():
+            if baixar:
+                for j in JOGOS:
+                    try:
+                        sync_draws(j, log=lambda *_: None)
+                    except Exception as e:
+                        log.warning("hoje: %s sem acesso (%s)", j, e)
+            res = lab.ciclo_diario(self.user, log=lambda m: log.info(m))
+            txt = ("(1) RESULTADOS OFICIAIS\n" + resumo_do_dia() + "\n(2) e (3) REDE NEURAL E ESTRATÉGIAS\n"
+                   + ("Registradas agora: " + ", ".join(res["registrados"]) + "\n\n" if res["registrados"] else "\n")
+                   + res["placar"] + "\n\n(4) HISTÓRICO: na auditoria com toda a história (bateria 1.0, 20 sementes), "
+                   "nenhuma estratégia superou o acaso depois da correção para as 9 loterias.")
+            self.after(0, lambda: (self.h_out.delete("1.0", "end"), self.h_out.insert("end", txt)))
+        self.bg(f)
 
     def build_semana(self):
         """Tela inicial: quanto quero gastar -> cartões prontos, chances e botão 'Apostei'."""
@@ -1168,6 +1200,7 @@ class App(tk.Tk):
                              f"({p['p_acumula']:.0%} de chance).", "head")
         for a in checar_alertas():
             self.log(f"Alerta: {a['jogo']} com retorno de {a['retorno']:.0%} (prêmio {brl(a['estimado'])}).", "head")
+        self.atualizar_hoje()   # resultados do dia + apostas da rede para os próximos sorteios
 
     def sync(self):
         self.log("Baixando resultados...", "head")
@@ -1625,8 +1658,14 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
-    if "--alerta" in sys.argv:
+    if "--alerta" in sys.argv:   # tarefa diária do Windows: resultados, alertas e apostas da rede (app fechado)
         modo_alerta()
+        u = remembered_user()
+        if u:
+            try:
+                lab.ciclo_diario(u, log=lambda m: log.info(m))
+            except Exception:
+                log.warning("ciclo diário falhou", exc_info=True)
         sys.exit()
     user = remembered_user()
     while True:

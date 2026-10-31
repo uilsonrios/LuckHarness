@@ -1,0 +1,237 @@
+{
+ "versao": "aprendizado-1.0",
+ "congelado_em": "2026-10-31T04:29:06",
+ "commit_base": "13c85c8",
+ "criterios_sha256": "71e95a0a57a597ad2216a2ce231a65a92bce3a4c242d676c5f203bbfa83eb556",
+ "sementes": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16,
+  17,
+  18,
+  19
+ ],
+ "grade": [
+  [
+   0.001,
+   8,
+   "basico"
+  ],
+  [
+   0.001,
+   8,
+   "completo"
+  ],
+  [
+   0.001,
+   32,
+   "basico"
+  ],
+  [
+   0.001,
+   32,
+   "completo"
+  ],
+  [
+   0.003,
+   8,
+   "basico"
+  ],
+  [
+   0.003,
+   8,
+   "completo"
+  ],
+  [
+   0.003,
+   32,
+   "basico"
+  ],
+  [
+   0.003,
+   32,
+   "completo"
+  ],
+  [
+   0.01,
+   8,
+   "basico"
+  ],
+  [
+   0.01,
+   8,
+   "completo"
+  ],
+  [
+   0.01,
+   32,
+   "basico"
+  ],
+  [
+   0.01,
+   32,
+   "completo"
+  ]
+ ],
+ "modalidades": {
+  "megasena": {
+   "config": [
+    0.001,
+    32,
+    "basico"
+   ],
+   "melhor_referencia": "frequ\u00eancia janela 50",
+   "hash_dados": "f67782b29a7f0b4c",
+   "concursos": 3079,
+   "ini": 200,
+   "aquecimento": 500,
+   "desenvolvimento": 1189,
+   "final": 1190,
+   "cadeia_rede_semente0": "81e03041c7f7bdff0f40c7d0f6ec464b07dce99e8767241ef07360839e247d07",
+   "resultados_sha256": "00120bb008833a771da7e933be55b6a99cdea21162a429676559e5457a26d1c0"
+  },
+  "lotofacil": {
+   "config": [
+    0.001,
+    32,
+    "basico"
+   ],
+   "melhor_referencia": "frequ\u00eancia ponderada (meia-vida 100)",
+   "hash_dados": "7da007a96657eac9",
+   "concursos": 3818,
+   "ini": 200,
+   "aquecimento": 500,
+   "desenvolvimento": 1559,
+   "final": 1559,
+   "cadeia_rede_semente0": "186c82cc299d326cfcbd9b70e9ed49edbba5b41d6c706b25b50fb4e62440b181",
+   "resultados_sha256": "99a426ce28116690de3fa0247e8cdf36b7ca8dd30f93890876ad98d85c994249"
+  },
+  "quina": {
+   "config": [
+    0.01,
+    8,
+    "completo"
+   ],
+   "melhor_referencia": "Markov por n\u00famero",
+   "hash_dados": "56d50a3de441ea9f",
+   "concursos": 7156,
+   "ini": 200,
+   "aquecimento": 500,
+   "desenvolvimento": 3228,
+   "final": 3228,
+   "cadeia_rede_semente0": "9bf6429583e348d79728779ece0fda891d663f0fbc749730bfb18c1667cf1dee",
+   "resultados_sha256": "387aae592392cebf71c68fa854540ac07f305428b1dc0ee2ad4b28d24e0c63df"
+  },
+  "lotomania": {
+   "config": [
+    0.003,
+    32,
+    "basico"
+   ],
+   "melhor_referencia": "distribui\u00e7\u00e3o (faixa x paridade)",
+   "hash_dados": "88af03b37cf87f61",
+   "concursos": 2994,
+   "ini": 200,
+   "aquecimento": 500,
+   "desenvolvimento": 1147,
+   "final": 1147,
+   "cadeia_rede_semente0": "d786d93f829198f188f7c786b24f26b8cfbfbad6b28dfd381651cbb91dc7461f",
+   "resultados_sha256": "4239e2b7a35a62c0ed02d1a510f66b45318d754c3e91febfb7d9c667c8b90d42"
+  },
+  "duplasena": {
+   "config": [
+    0.003,
+    32,
+    "basico"
+   ],
+   "melhor_referencia": "frequ\u00eancia ponderada (meia-vida 100)",
+   "hash_dados": "af3d364e8fa42dac",
+   "concursos": 3027,
+   "ini": 200,
+   "aquecimento": 500,
+   "desenvolvimento": 1163,
+   "final": 1164,
+   "cadeia_rede_semente0": "2a43d6bfffd8504c7623a30d01ebf2e0dd151f5120474f0eb5a870dd53b82c02",
+   "resultados_sha256": "a10756ab53d54752a4df693e1b86c06daf677f41d027f57941a3c4dcad7a0410"
+  },
+  "timemania": {
+   "config": [
+    0.01,
+    8,
+    "basico"
+   ],
+   "melhor_referencia": "frequ\u00eancia janela 50",
+   "hash_dados": "396649744d66e799",
+   "concursos": 2461,
+   "ini": 200,
+   "aquecimento": 500,
+   "desenvolvimento": 880,
+   "final": 881,
+   "cadeia_rede_semente0": "620a3a7caf3b80508f29037a633760e4a03e5a5809f961943572416d872dd47b",
+   "resultados_sha256": "840f5995b2fc752b17cc890eb6102e4957d4bfac28bcc66f459b398397cc233e"
+  },
+  "diadesorte": {
+   "config": [
+    0.001,
+    8,
+    "completo"
+   ],
+   "melhor_referencia": "Markov por n\u00famero",
+   "hash_dados": "face5bcc424ebd27",
+   "concursos": 1336,
+   "ini": 50,
+   "aquecimento": 100,
+   "desenvolvimento": 593,
+   "final": 593,
+   "cadeia_rede_semente0": "f6a3408637ca0b785d0558f2d6d86dcd6791632cf4fbe22a209065d2fb567933",
+   "resultados_sha256": "2bf16e9b7bca08a5bc403d11a6f4b9bed8360539b14e209c52aa51a391808bef"
+  },
+  "maismilionaria": {
+   "config": [
+    0.003,
+    32,
+    "basico"
+   ],
+   "melhor_referencia": "frequ\u00eancia ponderada (meia-vida 100)",
+   "hash_dados": "1b3247e6e1e6ce9e",
+   "concursos": 403,
+   "ini": 50,
+   "aquecimento": 100,
+   "desenvolvimento": 126,
+   "final": 127,
+   "cadeia_rede_semente0": "c96cff120d253ced2eb2d58c8a58c63ca7462ab1d67224f4b78a04587028d522",
+   "resultados_sha256": "16098096b50de55c092551e0b1023a983b52580431011f1e9e5e3dcfba39a4d5"
+  },
+  "supersete": {
+   "config": [
+    0.001,
+    8,
+    "basico"
+   ],
+   "melhor_referencia": "frequ\u00eancia janela 50",
+   "hash_dados": "f7ade7e7a26cd028",
+   "concursos": 917,
+   "ini": 50,
+   "aquecimento": 100,
+   "desenvolvimento": 383,
+   "final": 384,
+   "cadeia_rede_semente0": "69aa8b9f160215f29335c58484f97bcddc819a1d57a10c39ef70444cc78e0856",
+   "resultados_sha256": "cb5fb6ca20889db8dd888956953a8c70745cccdb02c128451c03214ff434dfc5"
+  }
+ },
+ "sinteticos_sha256": "b910693afb6ed68643be739257e3dd0fb35a2a80228222a753fe6584dc315437"
+}

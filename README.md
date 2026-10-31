@@ -15,6 +15,7 @@ O Windows pode mostrar o aviso "O Windows protegeu o computador", porque o execu
 | Aba | Para que serve |
 |---|---|
 | **Minha aposta da semana** | Você diz quanto quer gastar e o app monta os cartões prontos, com a chance de cada faixa e o botão "Apostei" para registrar o gasto. Tem volante clicável e calendário de sorteios. No primeiro uso, um assistente pergunta o jogo, o orçamento e o limite do mês |
+| **Hoje** | O que saiu em cada loteria e o que acumulou, com o próximo concurso e o prêmio estimado (dados oficiais da Caixa). Abaixo, a rede neural ao vivo: antes de cada sorteio, a rede (versão congelada) e as estratégias simples registram suas apostas com selo; depois do resultado, o placar mostra todas, inclusive as que perdem do acaso |
 | **Análise** | Frequência, atrasos e somas dos sorteios, quantos números se repetem do concurso anterior (real vs. acaso) e um modelo de aprendizado testado contra o acaso (mostra que não supera o acaso) |
 | **Minhas apostas** | Salva as apostas e confere sozinho com os resultados oficiais: dezenas, trevos, Time do Coração, Mês da Sorte e os dois sorteios da Dupla Sena |
 | **Fechamento** | Gera cartões com garantia, por exemplo "se 4 das minhas 15 saírem, um cartão faz 3". Uma busca local reduz o número de cartões |
@@ -91,6 +92,7 @@ Nenhum modelo prevê os números sorteados, e o app trata qualquer alegação ne
 - **Laboratório:** cada estratégia só vê concursos anteriores (há teste automático para isso). Mostra a diferença para o acaso com intervalo de confiança, o menor efeito que o teste consegue detectar, a estabilidade a cada 100 concursos e a correção de Holm sobre **todas** as execuções já registradas naquele jogo (tabela `experimentos`, com versão, semente e hash dos dados). "Sem evidência de diferença" não quer dizer "igual ao acaso".
 - **Modelo de popularidade:** a configuração é escolhida na validação, a decisão de usá-lo vem de um trecho reservado e a nota de teste só é relatada. Em 31/10/2026 o período de teste foi consultado durante o desenvolvimento; o app avisa isso até o teste passar a começar depois dessa data.
 - **`experimentos.py`** (pesquisa, requer numpy): redes neurais em walk-forward, com distribuição nula simulada, várias sementes, curvas de treino e um registro em `experimentos/registro.jsonl`. Se o período de teste já foi consultado, o resultado sai marcado como exploratório.
+- **Auditoria da rede (31/10/2026, 9 loterias, 20 sementes, critérios registrados antes):** a rede aprende padrões artificiais, mas nas loterias reais nenhuma vantagem sobre o acaso ou sobre modelos simples sobreviveu à correção para múltiplos testes. Em acompanhamento nos concursos futuros: a rede no Dia de Sorte e a frequência histórica na Lotofácil.
 - **Teste confiável de uma versão nova:** só em concursos futuros, com modelo e métrica registrados antes ("Registrar para o próximo sorteio").
 
 ### Estrutura
@@ -101,6 +103,7 @@ Nenhum modelo prevê os números sorteados, e o app trata qualquer alegação ne
 | `otimizador.py` | Probabilidades exatas, otimizador, cartões espalhados, modelo de popularidade, teste no passado, risco de ruína, auditoria e previsão |
 | `laboratorio.py` | Laboratório de estratégias: testes cegos, teste contínuo, registros para sorteios futuros e registro de experimentos |
 | `experimentos.py` | Experimentos de previsão reproduzíveis (pesquisa; não entra no app) |
+| `aprendizado.py` | Bateria de aprendizado sequencial: rede online e modelos simples, previsões encadeadas por hash, critérios pré-registrados (`experimentos/criterios_aprendizado.md`) e versão congelada (`experimentos/aprendizado/congelado_v1.0.json`) |
 | `luckharness.py` | Interface Tkinter |
 | `tests/` | Testes pytest, incluindo a abertura de todas as abas |
 

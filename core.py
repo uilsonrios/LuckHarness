@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.15.0"
+__version__ = "1.16.0"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -244,6 +244,7 @@ def _get(url, timeout=15):
 
 def _from_mirror(d):
     return {"concurso": d["concurso"], "dezenas": d["dezenas"], "data": d.get("data"), "fonte": "espelho",
+            "acumulado": d.get("acumulou"), "proximo": d.get("dataProximoConcurso"),
             "trevos": d.get("trevos") or [], "time": d.get("timeCoracao"), "mes": d.get("mesSorte"),
             "estimado": d.get("valorEstimadoProximoConcurso") or 0,
             "arrecadado": d.get("valorArrecadado") or 0,
@@ -253,6 +254,7 @@ def _from_mirror(d):
 
 def _from_caixa(d):
     return {"concurso": d["numero"], "dezenas": d["listaDezenas"], "data": d.get("dataApuracao"), "fonte": "caixa",
+            "acumulado": d.get("acumulado"), "proximo": d.get("dataProximoConcurso"),
             "trevos": d.get("trevosSorteados") or [], "dezenas2": d.get("listaDezenasSegundoSorteio") or [],
             "time": d.get("nomeTimeCoracaoMesSorte"), "mes": d.get("nomeTimeCoracaoMesSorte"),
             "estimado": d.get("valorEstimadoProximoConcurso") or 0,
@@ -297,7 +299,8 @@ def _row(jogo, d):
         dez = [100 if x == 0 else x for x in dez]   # o '00' do volante: uma só representação em todo o app
     meta = {"data": d["data"], "trevos": [int(x) for x in d["trevos"]], "premios": d["premios"],
             "estimado": d.get("estimado", 0), "arrecadado": d.get("arrecadado", 0),
-            "ganhadores": d.get("ganhadores") or [], "fonte": d.get("fonte")}
+            "ganhadores": d.get("ganhadores") or [], "fonte": d.get("fonte"), "acumulado": d.get("acumulado"),
+            "proximo": d.get("proximo")}
     if jogo in EXTRA:
         chave = EXTRA[jogo][0]
         meta[chave] = _extra(jogo, d.get(chave))
@@ -402,6 +405,38 @@ def versao_regra(jogo):
             f"{m['sorteados']} sorteados{' (2 sorteios)' if m.get('sorteios') == 2 else ''}, faixas "
             f"{', '.join(map(str, m['faixas']))}; preço R$ {preco:.2f}".replace(".", ",")
             + (f" desde o concurso {ini}" if ini else "") + f" ({fonte}). Fichas conferidas em 31/10/2026.")
+
+
+def resumo_do_dia():
+    """Último resultado de cada loteria: números, faixa principal (ganhadores e prêmio, ou ACUMULOU) e o próximo
+    concurso com o prêmio estimado."""
+    out = [f"=== RESULTADOS (atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')}) ===", ""]
+    for j, m in M.items():
+        r = db().execute("SELECT concurso, dezenas, meta FROM draws WHERE jogo=? ORDER BY concurso DESC LIMIT 1",
+                         (j,)).fetchone()
+        if not r:
+            out += [f"{m['nome']}: sem resultados (clique em 'Atualizar agora').", ""]
+            continue
+        conc, dz, meta = r[0], json.loads(r[1]), json.loads(r[2] or "{}")
+        extra = ""
+        if m.get("extra"):
+            extra = f"  | {m['extra'][1]}: {meta.get(m['extra'][0]) or '?'}"
+        if m.get("trevos"):
+            extra = f"  | trevos: {' '.join(map(str, meta.get('trevos') or []))}"
+        out.append(f"{m['nome']} — concurso {conc} ({meta.get('data', '?')}): {fmt_bet(j, dz, [])}{extra}")
+        if meta.get("dezenas2"):
+            out.append(f"   2º sorteio: {fmt_bet(j, meta['dezenas2'], [])}")
+        pr, gan = meta.get("premios") or [], meta.get("ganhadores") or []
+        acumulou = meta.get("acumulado") if meta.get("acumulado") is not None else bool(gan and gan[0] == 0)
+        if pr:
+            topo = pr[0][0]
+            out.append(f"   {topo}: " + ("ACUMULOU" if acumulou else
+                                         f"{gan[0] if gan else '?'} ganhador(es), {brl(pr[0][1])} cada"))
+        prox = meta.get("proximo") or proximo_sorteio(j).strftime("%d/%m/%Y")
+        out.append(f"   Próximo: concurso {conc + 1} em {prox}"
+                   + (f", prêmio estimado {brl(meta['estimado'])}" if meta.get("estimado") else ""))
+        out.append("")
+    return "\n".join(out)
 
 
 def load_sorteios(jogo, n):

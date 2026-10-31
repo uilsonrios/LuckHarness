@@ -8,7 +8,7 @@ import hashlib, json, math, random
 from collections import Counter
 from datetime import datetime
 
-from core import JOGOS, M, __version__, versao_regra, db, hash_dados, hypergeom, last_concurso, learn, load_draws, parse_bet
+from core import JOGOS, M, __version__, fmt_bet, versao_regra, db, hash_dados, hypergeom, last_concurso, learn, load_draws, parse_bet
 import otimizador as o
 
 ESTRATEGIAS = {
@@ -356,6 +356,8 @@ def registrar_proximo(user, jogo, estrategias=None, minha=None):
     ctx = {"rng": random.Random(), "estrategias": set(estrategias or ESTRATEGIAS), "minha": minha,
            "pop": _pop_passado(jogo, alvo)}
     a = _apostas(jogo, todos, ctx)
+    for nome, aposta in extras_acompanhamento(jogo).items():
+        a[nome] = [aposta]
     criado = datetime.now().isoformat(timespec="seconds")
     selo = hashlib.sha256(json.dumps({"jogo": jogo, "concurso": alvo, "apostas": a, "criado": criado},
                                      sort_keys=True).encode()).hexdigest()
@@ -369,6 +371,149 @@ def registrar_proximo(user, jogo, estrategias=None, minha=None):
                                     + (f" … (+{len(cs) - 3} cartões)" if len(cs) > 3 else "")))
     out += ["", "Depois do sorteio, baixe os resultados e clique em 'Conferir registros'."]
     return "\n".join(out)
+
+
+# Configuração da rede por modalidade escolhida no período de desenvolvimento da bateria 1.0 (congelada em
+# experimentos/aprendizado/congelado_v1.0.json). A rede ao vivo usa exatamente esta: nada é reajustado aos
+# resultados novos, que servem só para conferir as previsões.
+CONFIG_CONGELADA = {"megasena": (1e-3, 32, "basico"), "lotofacil": (1e-3, 32, "basico"), "quina": (1e-2, 8, "completo"),
+                    "lotomania": (3e-3, 32, "basico"), "duplasena": (3e-3, 32, "basico"),
+                    "timemania": (1e-2, 8, "basico"), "diadesorte": (1e-3, 8, "completo"),
+                    "maismilionaria": (3e-3, 32, "basico"), "supersete": (1e-3, 8, "basico")}
+STATUS = {"rede online": "experimental", "modelo neural": "experimental", "ao acaso": "referência",
+          "quentes": "referência", "frios": "referência", "repetir último": "referência",
+          "menos jogados": "referência", "otimizador": "referência"}
+ACOMPANHAMENTO = {("diadesorte", "rede online"): "acompanhamento especial (p = 0,03 sem correção na bateria 1.0; "
+                                                 "não sobreviveu à correção para 9 loterias)",
+                  ("lotofacil", "frequência histórica"): "acompanhamento especial (p = 0,003 sem correção na bateria "
+                                                         "1.0; 0,13 com a correção para 45 testes)"}
+STATUS["frequência histórica"] = "referência"
+
+
+def painel_hoje(user):
+    """Seções separadas: (2) previsões registradas antes do sorteio que ainda aguardam resultado; (3) placar só com
+    concursos já sorteados, todas as estratégias (inclusive as que perdem do acaso), com intervalo de confiança."""
+    _sql_lab()
+    rows = db().execute("SELECT jogo, concurso, estrategia, numeros, criado, hash FROM lab WHERE user=? "
+                        "ORDER BY jogo, concurso, estrategia", (user,)).fetchall()
+    pendentes, conf = {}, {}
+    sorteios = {}
+    for jogo, conc, est, nums, criado, selo in rows:
+        if jogo not in sorteios:
+            sorteios[jogo] = _sorteios_de(jogo)
+        if conc not in sorteios[jogo]:
+            pendentes.setdefault((jogo, conc), []).append((est, json.loads(nums)[0], criado, selo))
+            continue
+        hits = [_acertos(jogo, c, s) for c in json.loads(nums) for s in sorteios[jogo][conc]]
+        conf.setdefault((jogo, est), []).append(hits)
+    out = ["=== PREVISÕES REGISTRADAS ANTES DO SORTEIO (ainda sem resultado) ===",
+           "Feitas só com resultados anteriores e seladas; nenhuma é resultado confirmado.", ""]
+    for (jogo, conc), regs in sorted(pendentes.items()):
+        rede = next((r for r in regs if r[0] == "rede online"), None)
+        out.append(f"  {NOMES_CURTOS.get(jogo, jogo):<13} concurso {conc}: {len(regs)} estratégias registradas "
+                   f"(primeira em {min(r[2] for r in regs)}) — AGUARDANDO SORTEIO")
+        if rede:
+            out.append(f"      rede online: {fmt_bet(jogo, rede[1], [])}   (selo {rede[3][:12]}, {rede[2]})")
+    if not pendentes:
+        out.append("  (nenhuma pendente)")
+    out += ["", "=== PLACAR: CONCURSOS JÁ SORTEADOS (todas as estratégias, inclusive as que perdem do acaso) ===",
+            f"{'Loteria':<13}{'Estratégia':<16}{'Status':<14}{'Concursos':>10}{'Média':>8}{'Acaso':>8}{'Diferença':>11}"
+            f"{'IC 95%':>20}"]
+    for (jogo, est), regs in sorted(conf.items()):
+        esp, sd = _referencia(jogo)[:2]
+        medias = [sum(h) / len(h) for h in regs]
+        m = sum(medias) / len(medias)
+        se = sd / math.sqrt(len(medias) * len(regs[0]))
+        st = ACOMPANHAMENTO.get((jogo, est), STATUS.get(est, "referência"))
+        out.append(f"{NOMES_CURTOS.get(jogo, jogo):<13}{est:<16}{st.split(' (')[0]:<14}{len(regs):>10}{m:>8.2f}"
+                   f"{esp:>8.2f}{m - esp:>+11.2f}{m - esp - 1.96 * se:>+10.2f} a {m - esp + 1.96 * se:<+7.2f}")
+    if not conf:
+        out.append("  (nenhum concurso conferido ainda)")
+    out += ["", "Status: 'referência' = estratégia simples usada como régua; 'experimental' = rede ou modelo em teste; "
+                "'acompanhamento especial' = " + "; ".join(f"{e} no {NOMES_CURTOS.get(j, j)}: {t}"
+                                                           for (j, e), t in ACOMPANHAMENTO.items()) + ".",
+            "Com poucos concursos o intervalo é largo: um resultado bom ou ruim isolado não prova nada."]
+    return "\n".join(out)
+
+
+NOMES_CURTOS = {j: M[j]["nome"] for j in JOGOS}
+
+
+def frequencia_historica(jogo):
+    """Os números que mais saíram em toda a história (Super Sete: o dígito mais frequente de cada coluna)."""
+    todos = [d for _, d in load_draws(jogo, 100000)]
+    N, _, mn = JOGOS[jogo][:3]
+    if M[jogo].get("colunas"):
+        return [max(range(10), key=lambda x: (sum(d[c] == x for d in todos), -x)) for c in range(7)]
+    cont = Counter(x for d in todos for x in d)
+    return sorted(sorted(range(1, N + 1), key=lambda x: (-cont[x], x))[:mn])
+
+
+def extras_acompanhamento(jogo, pular=()):
+    """Estratégias registradas todo dia além das do Laboratório: a rede online (versão 1.0 congelada) e a
+    frequência histórica (o resultado mais forte da bateria, na Lotofácil, ainda não confirmado)."""
+    out = {}
+    if "frequência histórica" not in pular:
+        out["frequência histórica"] = frequencia_historica(jogo)
+    if "rede online" not in pular:
+        rede = rede_online(jogo)
+        if rede:
+            out["rede online"] = rede
+    return out
+
+
+def rede_online(jogo):
+    """Aposta da rede online (a mesma da auditoria da 2ª etapa) para o próximo concurso: ela percorre todo o
+    histórico prevendo e aprendendo com cada erro, e só então prevê o concurso que ainda não aconteceu.
+    None se o numpy não estiver disponível."""
+    try:
+        import numpy as np
+        import aprendizado as ap
+    except ImportError:
+        return None
+    s = ap.serie(jogo)
+    T = len(s["Y"])
+    ext = {**s, "Y": np.vstack([s["Y"], np.zeros((1, s["Y"].shape[1]), np.float32)]),
+           "concursos": s["concursos"] + [s["concursos"][-1] + 1]}   # linha vazia: o concurso futuro
+    for k in ("Y2", "TR"):
+        if s.get(k) is not None:
+            ext[k] = np.vstack([s[k], np.zeros((1, s[k].shape[1]), np.float32)])
+    lr, oculta, conjunto = CONFIG_CONGELADA.get(jogo, (3e-3, 16, "completo"))   # versão 1.0 congelada
+    mod = ap.Rede(ext, seed=0, lr=lr, oculta=oculta, conjunto=conjunto)
+    for t in range(ext.get("ini", ap.INI), T):
+        mod.atualizar(t)
+    esc = ap.escolher(ext, mod.prever(T), np.random.default_rng(0))
+    if M[jogo].get("colunas"):   # Super Sete: unidade c*10+d -> dígito d da coluna c
+        return [int(u) % 10 for u in esc]
+    return sorted(int(u) + 1 for u in esc)
+
+
+def ciclo_diario(user, log=print):
+    """Rotina de cada atualização: registra (com selo) as apostas de todas as estratégias, inclusive a rede
+    online, para o próximo concurso de cada loteria que ainda não tem registro, e devolve o placar dos registros
+    já conferidos."""
+    _sql_lab()
+    novos = []
+    for jogo in JOGOS_LAB:
+        alvo = last_concurso(jogo) + 1
+        feitos = {e for (e,) in db().execute("SELECT estrategia FROM lab WHERE user=? AND jogo=? AND concurso=?",
+                                              (user, jogo, alvo))}
+        try:
+            if alvo > 1 and not feitos:
+                registrar_proximo(user, jogo, [e for e in ESTRATEGIAS if e != "minha aposta"])
+                novos.append(f"{jogo} {alvo}")
+            elif feitos:   # registro antigo sem as estratégias em acompanhamento: o sorteio ainda não houve
+                for nome, aposta in extras_acompanhamento(jogo, pular=feitos).items():
+                    criado = datetime.now().isoformat(timespec="seconds")
+                    selo = hashlib.sha256(json.dumps({"jogo": jogo, "concurso": alvo, nome: aposta,
+                                                      "criado": criado}, sort_keys=True).encode()).hexdigest()
+                    with db() as c:
+                        c.execute("INSERT INTO lab(user, jogo, concurso, estrategia, numeros, criado, hash) "
+                                  "VALUES(?,?,?,?,?,?,?)", (user, jogo, alvo, nome, json.dumps([aposta]), criado, selo))
+                    novos.append(f"{jogo} {alvo} ({nome})")
+        except Exception as e:
+            log(f"  {jogo}: registro não feito ({e})")
+    return {"registrados": novos, "placar": painel_hoje(user)}
 
 
 def conferir_registros(user):

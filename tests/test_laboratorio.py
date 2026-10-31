@@ -102,3 +102,31 @@ def test_experimentos_ficam_registrados_e_corrigidos_pela_familia(quina):
 def test_neuronio_relata_ic_e_poder(quina):
     txt, _ = core.learn(quina, core.load_draws(quina, 1000), 5, teste=0)
     assert "IC 95%" in txt and "só detecta diferenças" in txt and "NÃO supera" not in txt
+
+
+def test_ciclo_diario_registra_rede_e_estrategias_uma_vez(quina):
+    pytest.importorskip("numpy")
+    lab._sql_lab()
+    with core.db() as c:
+        c.execute("DELETE FROM lab WHERE user='diario'")
+    r1 = lab.ciclo_diario("diario", log=lambda m: None)
+    assert "quina 501" in r1["registrados"]
+    est = {e for (e,) in core.db().execute("SELECT estrategia FROM lab WHERE user='diario' AND jogo='quina'")}
+    assert "rede online" in est and "quentes" in est and "minha aposta" not in est
+    nums = json.loads(core.db().execute("SELECT numeros FROM lab WHERE user='diario' AND jogo='quina' AND estrategia='rede online'"
+                                        ).fetchone()[0])[0]
+    assert len(nums) == 5 and all(1 <= x <= 80 for x in nums)
+    assert "quina 501" not in lab.ciclo_diario("diario", log=lambda m: None)["registrados"]   # não duplica
+    # registro antigo sem a rede (sorteio ainda não aconteceu): a rede entra depois, com selo próprio
+    with core.db() as c:
+        c.execute("DELETE FROM lab WHERE user='diario' AND estrategia='rede online'")
+    assert "quina 501 (rede online)" in lab.ciclo_diario("diario", log=lambda m: None)["registrados"]
+
+
+def test_resumo_do_dia_mostra_acumulado_e_proximo(quina):
+    with core.db() as c:
+        c.execute("UPDATE draws SET meta=? WHERE jogo='quina' AND concurso=500",
+                  (json.dumps({"data": "30/10/2026", "premios": [["5 acertos", 0]], "ganhadores": [0],
+                               "estimado": 9.5e6, "proximo": "01/11/2026"}),))
+    txt = core.resumo_do_dia()
+    assert "Quina — concurso 500 (30/10/2026)" in txt and "ACUMULOU" in txt and "concurso 501 em 01/11/2026" in txt
