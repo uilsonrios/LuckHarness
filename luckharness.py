@@ -427,8 +427,9 @@ class App(tk.Tk):
     def volante(self):
         """Marca as dezenas clicando, como no volante da lotérica."""
         jogo = self.jogo.get()
-        if jogo == "supersete":
-            messagebox.showinfo("Volante", "No Super Sete digite 7 números de 0 a 9, um por coluna.")
+        if M[jogo].get("colunas"):
+            messagebox.showinfo("Volante", "No Super Sete digite as 7 colunas separadas por espaço (0 a 9). Para "
+                                           "mais números numa coluna use vírgula, ex.: 1,5 3 4 0 9 2 7 (até 21).")
             return
         N, mx = JOGOS[jogo][0], MAX_DEZ[jogo]
         main, _, extra = self.bet_in.get().partition("+")
@@ -451,7 +452,7 @@ class App(tk.Tk):
                 marcadas.add(x)
             pinta()
         for x in range(1, N + 1):
-            num = x % 100 if jogo == "lotomania" else x   # a Lotomania marca 00 no lugar do 100
+            num = x % 100 if M[jogo].get("zero_e_100") else x   # a Lotomania marca 00 no lugar do 100
             bt = tk.Button(grade, text=f"{num:02d}", width=3, relief="flat", font=(FONT, 9, "bold"),
                            command=lambda x=x: clica(x), cursor="hand2")
             bt.grid(row=(x - 1) // cols, column=(x - 1) % cols, padx=1, pady=1)
@@ -467,7 +468,7 @@ class App(tk.Tk):
         ttk.Button(b, text="Usar estas dezenas", style="Accent.TButton", command=ok).pack(side="right")
         ttk.Button(b, text="Limpar", style="Ghost.TButton",
                    command=lambda: (marcadas.clear(), pinta())).pack(side="right", padx=6)
-        if jogo in EXTRA or jogo == "maismilionaria":
+        if jogo in EXTRA or M[jogo].get("trevos"):
             ttk.Label(b, style="Muted.TLabel", text="Trevos/time/mês: escreva depois de '+' no campo.").pack(
                 side="left")
         self.janela_volante = w
@@ -850,7 +851,7 @@ class App(tk.Tk):
         self.otim_plan = b
         j = b["jogo"]
         p_esp = None
-        if b["tipo"] == "simples" and cobertura:
+        if b["tipo"] == "simples" and cobertura and not b.get("tamanhos"):
             cards, tv, p_esp, p_ale = comparar_cobertura(j, b["k"], b["n"])
         elif b["tipo"] == "simples":
             cards, tv = sugestoes(j, b["k"], b["n"]), None
@@ -865,7 +866,7 @@ class App(tk.Tk):
         self.otim_cards = [(j, c, t) for c, t in zip(cards, extras)]
         linhas = [texto, "", f"Cartões sugeridos ({j}):"]
         for i, (c, t) in enumerate(zip(cards, extras), 1):
-            fd = fator_divisao(j, c, t if j == "maismilionaria" else ())
+            fd = fator_divisao(j, c, t if M[j].get("trevos") else ())
             linhas.append(f"  {i:>2}. {fmt_bet(j, c, t)}" + (f"   divisão do prêmio: {fd:.2f}x a média"
                                                                if fd else ""))
         if p_esp is not None:
@@ -976,14 +977,14 @@ class App(tk.Tk):
             messagebox.showerror("Aposta inválida", str(e))
             return
         def f():
-            fd = fator_divisao(jogo, nums, trevos if jogo == "maismilionaria" else ())
+            fd = fator_divisao(jogo, nums, trevos if M[jogo].get("trevos") else ())
             return avaliar_aposta(jogo, nums, trevos, fator=fd)[0]
         self.bg_ret(f)
 
     def sim_bolao(self):
         jogo = self.jogo.get()
         n, cotas = self.r_n.get(), max(1, self.r_cotas.get())
-        if jogo != "supersete" and not JOGOS[jogo][2] <= n <= MAX_DEZ[jogo]:
+        if not M[jogo].get("colunas") and not JOGOS[jogo][2] <= n <= MAX_DEZ[jogo]:
             messagebox.showerror("Bolão", f"{jogo}: use de {JOGOS[jogo][2]} a {MAX_DEZ[jogo]} dezenas.")
             return
         self.bg_ret(lambda: bolao(jogo, n, cotas))
@@ -1181,20 +1182,20 @@ class App(tk.Tk):
         return self.jogo.get(), self.n.get(), self.bet.get()
 
     def _analysis(self, jogo, n, bet, aviso=True):
-        draws = load_draws(jogo, n)
+        draws = load_sorteios(jogo, n)
         if not draws:
             raise RuntimeError("Sem dados. Clique em 'Baixar resultados'.")
         if aviso:
             self.log("Analisando e treinando o modelo...", "head")
-        if jogo == "supersete":
+        if M[jogo].get("colunas"):
             rep, cols = analyze_ss(draws)
             self.dados = {"jogo": jogo, "cols": cols}
             self.last_report = rep + "\n\nÚltimos concursos:\n" + "\n".join(
                 f"  {c}: " + " ".join(map(str, d)) for c, d in draws[:15])
         else:
             rep, freq, atr, st, somas = analyze(jogo, draws, bet)
-            # o modelo precisa de histórico longo, mesmo quando a análise usa poucos concursos
-            mrep, pick = learn(jogo, load_draws(jogo, max(n, 300)), bet)
+            # o modelo usa o histórico inteiro (teste de até 1.000 concursos), mesmo quando a análise usa poucos
+            mrep, pick = learn(jogo, load_sorteios(jogo, 100000), bet, teste=0)   # todo o histórico: mais poder
             rep += "\n" + mrep
             self.dados = {"jogo": jogo, "freq": freq, "atraso": atr, "soma": st, "somas": somas, "pick": pick}
             self.last_report = rep + "\n\nÚltimos concursos:\n" + recent_text(draws)
@@ -1216,7 +1217,7 @@ class App(tk.Tk):
                      "popularidade, números pouco jogados):", "head")
             orc = float(load_prefs().get("orcamento") or 0)
             qtd = max(1, min(5, int(orc // JOGOS[jogo][4]))) if orc else 5   # respeita o orçamento salvo
-            sugs = sugestoes(jogo, qtd, p[2] if jogo != "supersete" else None)
+            sugs = sugestoes(jogo, qtd, p[2] if not M[jogo].get("colunas") else None)
             self.last_sugs = [(jogo, a) for a in sugs]
             for a in sugs:
                 fd = fator_divisao(jogo, a)
@@ -1230,7 +1231,7 @@ class App(tk.Tk):
                      f"retorno {ev['retorno']:.0%}. Detalhes na aba Retorno.")
             self.log("Use 'Salvar sugeridas' na aba Minhas apostas para acompanhar estas apostas."
                      + (" Trevos/time/mês são sorteados ao salvar (dá para trocar em 'Editar')."
-                        if jogo in EXTRA or jogo == "maismilionaria" else ""))
+                        if jogo in EXTRA or M[jogo].get("trevos") else ""))
         self.bg(f)
 
     def show_chart(self, kind):
@@ -1262,12 +1263,15 @@ class App(tk.Tk):
     # ---------- apostas ----------
     def add_bet(self):
         jogo = self.jogo.get()
+        txt = self.bet_in.get()
+        # Lotomania: '+ espelho' registra também a aposta-espelho (os outros 50 números, uma aposta a mais)
+        com_espelho = M[jogo].get("zero_e_100") and "espelho" in txt.lower()
         try:
-            nums, trevos = parse_bet(jogo, self.bet_in.get())
+            nums, trevos = parse_bet(jogo, re.sub(r"\+?\s*espelho", "", txt, flags=re.I) if com_espelho else txt)
         except ValueError as e:
             messagebox.showerror("Aposta inválida", str(e))
             return
-        self._save_bets([(jogo, nums, trevos)])
+        self._save_bets([(jogo, nums, trevos)] + ([(jogo, espelho(nums), [])] if com_espelho else []))
         self.bet_in.delete(0, "end")
 
     def add_sugs(self):
@@ -1422,7 +1426,7 @@ class App(tk.Tk):
 
     def fill_fech(self):
         jogo = self.jogo.get()
-        if jogo == "supersete":
+        if M[jogo].get("colunas"):
             messagebox.showinfo("Fechamento", "O Super Sete não tem fechamento.")
             return
         qtd = min(JOGOS[jogo][2] + 4, MAX_DEZ[jogo], JOGOS[jogo][0])
@@ -1432,7 +1436,7 @@ class App(tk.Tk):
 
     def run_fech(self):
         jogo = self.jogo.get()
-        if jogo == "supersete":
+        if M[jogo].get("colunas"):
             messagebox.showinfo("Fechamento", "Fechamento não se aplica à Super Sete (um número por coluna).")
             return
         N, K = JOGOS[jogo][:2]

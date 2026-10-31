@@ -8,7 +8,7 @@ import hashlib, json, math, random
 from collections import Counter
 from datetime import datetime
 
-from core import JOGOS, db, hypergeom, last_concurso, learn, load_draws, parse_bet
+from core import JOGOS, M, __version__, versao_regra, db, hash_dados, hypergeom, last_concurso, learn, load_draws, parse_bet
 import otimizador as o
 
 ESTRATEGIAS = {
@@ -21,7 +21,43 @@ ESTRATEGIAS = {
     "otimizador": "10 cartões espalhados do Otimizador",
     "minha aposta": "os números que você digitar",
 }
-JOGOS_LAB = [j for j in JOGOS if j not in ("supersete", "maismilionaria")]   # acertos = dezenas em comum
+# métrica de cada modalidade: dezenas em comum; Super Sete = colunas certas; +Milionária = números (trevos à parte);
+# Dupla Sena = os dois sorteios do concurso contam
+JOGOS_LAB = list(JOGOS)
+
+
+def _referencia(jogo):
+    """(acertos esperados por aposta, desvio, chance de prêmio, faixas usadas, rótulo) pelo acaso, por modalidade."""
+    N, K, mn, fx, _ = JOGOS[jogo]
+    if M[jogo].get("colunas"):   # 7 colunas independentes, 1 chance em 10 cada
+        p_col = 0.1
+        p_premio = sum(math.comb(7, h) * p_col ** h * (1 - p_col) ** (7 - h) for h in fx)
+        return 7 * p_col, math.sqrt(7 * p_col * (1 - p_col)), p_premio, fx, "3+ colunas"
+    if M[jogo].get("trevos"):   # só os números; 4+ premia com qualquer trevo
+        fx = [h for h in fx if h >= 4]
+    sd = math.sqrt(mn * (K / N) * (1 - K / N) * (N - mn) / (N - 1))
+    p_premio = sum(hypergeom(N, K, mn, h) for h in fx)
+    pmin = min(h for h in fx if h > 0)
+    rot = f"{pmin}+" + (" ou 0" if 0 in fx else "") + (" números (trevos à parte)" if M[jogo].get("trevos") else "")
+    return mn * K / N, sd, p_premio, fx, rot
+
+
+def _acaso(jogo, rng):
+    N, _, mn = JOGOS[jogo][:3]
+    return [rng.randrange(10) for _ in range(7)] if M[jogo].get("colunas") else sorted(rng.sample(range(1, N + 1), mn))
+
+
+def _acertos(jogo, card, sorteio):
+    return sum(a == b for a, b in zip(card, sorteio)) if M[jogo].get("colunas") else len(set(card) & set(sorteio))
+
+
+def _sorteios_de(jogo):
+    """{concurso: [sorteios]}: a Dupla Sena tem dois por concurso."""
+    out = {}
+    for conc, dz, meta in db().execute("SELECT concurso, dezenas, meta FROM draws WHERE jogo=?", (jogo,)):
+        d2 = json.loads(meta or "{}").get("dezenas2") if M[jogo].get("sorteios") == 2 else None
+        out[conc] = [json.loads(dz)] + ([d2] if d2 else [])
+    return out
 
 
 def _sql_lab():
@@ -43,6 +79,21 @@ def _apostas(jogo, passado, ctx):
     draws = [d for _, d in passado]
     out = {}
     sel = ctx["estrategias"]
+    if M[jogo].get("colunas"):   # estratégias por coluna (a posição faz parte do resultado)
+        cols = [Counter(d[c] for d in draws[-50:]) for c in range(7)]
+        ultimo = [{d[c]: i for i, d in enumerate(draws)} for c in range(7)]
+        regras = {"ao acaso": lambda: _acaso(jogo, rng),
+                  "quentes": lambda: [max(range(10), key=lambda x: (cols[c][x], -x)) for c in range(7)],
+                  "frios": lambda: [min(range(10), key=lambda x: (ultimo[c].get(x, -1), x)) for c in range(7)],
+                  "repetir último": lambda: list(draws[-1])}
+        for nome, f in regras.items():
+            if nome in sel:
+                out[nome] = [f()]
+        if "otimizador" in sel:
+            out["otimizador"] = o.cartoes_espalhados(jogo, 10, rng=rng)
+        if "minha aposta" in sel and ctx.get("minha"):
+            out["minha aposta"] = [list(ctx["minha"])]
+        return out
     if "ao acaso" in sel:
         out["ao acaso"] = [sorted(rng.sample(range(1, N + 1), mn))]
     if "quentes" in sel:
@@ -80,11 +131,7 @@ def _avaliar(jogo, registros):
     """registros: {estratégia: [(acertos de cada cartão), ...]} -> tabela com z, valor-p e correção de Holm.
     Hipótese nula: a estratégia acerta em média o mesmo que uma aposta ao acaso (n*K/N por cartão). A unidade
     é o concurso: compara a média de acertos por cartão em cada concurso com o acaso."""
-    N, K, mn, fx, _ = JOGOS[jogo]
-    pmin = min(h for h in fx if h > 0)
-    esp = mn * K / N
-    sd = math.sqrt(mn * (K / N) * (1 - K / N) * (N - mn) / (N - 1))
-    p_premio = sum(hypergeom(N, K, mn, h) for h in fx)   # inclui o zero acerto da Lotomania
+    esp, sd, p_premio, fx, faixa = _referencia(jogo)   # inclui o zero acerto da Lotomania
     linhas = []
     for nome, por_conc in registros.items():
         hits = [h for cartoes in por_conc for h in cartoes]
@@ -104,19 +151,55 @@ def _avaliar(jogo, registros):
         z = (m_conc - esp) / (sd_conc / math.sqrt(n_ef)) if sd_conc else 0.0
         p = math.erfc(abs(z) / math.sqrt(2))
         premios = sum(h in fx for h in hits)
+        se = sd_conc / math.sqrt(n_ef) if sd_conc else 0.0
+        # estabilidade temporal: diferença para o acaso em blocos de 100 concursos
+        blocos = [sum(media_conc[i:i + 100]) / len(media_conc[i:i + 100]) - esp for i in range(0, n_ef, 100)]
         linhas.append({"nome": nome, "concursos": n_ef, "apostas": n, "media": media, "dif": media / esp - 1,
-                       "z": z, "p": p, "premios": premios, "premios_esp": n * p_premio, "melhor": max(hits)})
+                       "z": z, "p": p, "premios": premios, "premios_esp": n * p_premio, "melhor": max(hits),
+                       "ic": (m_conc - esp - 1.96 * se, m_conc - esp + 1.96 * se), "mde": 2.8 * se, "blocos": blocos})
     ordem = sorted(range(len(linhas)), key=lambda i: linhas[i]["p"])
     maior = 0.0
     for r, i in enumerate(ordem):   # correção de Holm: várias estratégias testadas ao mesmo tempo
         maior = max(maior, min(1.0, (len(linhas) - r) * linhas[i]["p"]))
         linhas[i]["p_ajust"] = maior
-    faixa = f"{pmin}+" + (" ou 0" if 0 in fx else "")
     return {"jogo": jogo, "esperado": esp, "faixa": faixa, "p_premio": p_premio, "linhas": linhas}
 
 
+# ---------------- registro de experimentos ----------------
+def _holm(ps):
+    ordem = sorted(range(len(ps)), key=lambda i: ps[i])
+    out, maior = [0.0] * len(ps), 0.0
+    for r, i in enumerate(ordem):
+        maior = max(maior, min(1.0, (len(ps) - r) * ps[i]))
+        out[i] = maior
+    return out
+
+
+def _registrar(r, modo, params):
+    """Grava a execução (parâmetros, versão, hash dos dados, valores-p) e recalcula a correção de Holm sobre
+    TODAS as hipóteses já testadas neste jogo: repetir o teste até 'dar certo' não engana o valor-p."""
+    jogo = r["jogo"]
+    anteriores = [p for (res,) in db().execute("SELECT resultado FROM experimentos WHERE jogo=?", (jogo,))
+                  for p in json.loads(res).get("p", [])]
+    atuais = [li["p"] for li in r["linhas"]]
+    aj = _holm(anteriores + atuais)[len(anteriores):]
+    for li, a in zip(r["linhas"], aj):
+        li["p_familia"] = a
+    with db() as c:
+        c.execute("INSERT INTO experimentos(quando, jogo, modo, params, versao, hash_dados, resultado) "
+                  "VALUES(?,?,?,?,?,?,?)",
+                  (datetime.now().isoformat(timespec="seconds"), jogo, modo, json.dumps(params, sort_keys=True),
+                   __version__, hash_dados(jogo),
+                   json.dumps({"p": atuais, "estrategias": [li["nome"] for li in r["linhas"]],
+                               "dif": [li["media"] - r["esperado"] for li in r["linhas"]]})))
+    r.update(hipoteses=len(anteriores) + len(atuais), execucoes=1 + db().execute(
+        "SELECT COUNT(*) FROM experimentos WHERE jogo=?", (jogo,)).fetchone()[0] - 1, versao=__version__,
+        hash_dados=hash_dados(jogo), params=params)
+    return r
+
+
 # ---------------- testes ----------------
-def teste_cego(jogo, escondidos=100, estrategias=None, minha=None, seed=2026):
+def _teste_cego(jogo, escondidos=100, estrategias=None, minha=None, seed=2026):
     """Esconde os últimos 'escondidos' concursos, aposta em todos de uma vez só com o passado, grava o hash das
     apostas e só então revela os resultados."""
     if jogo not in JOGOS_LAB:
@@ -133,24 +216,25 @@ def teste_cego(jogo, escondidos=100, estrategias=None, minha=None, seed=2026):
     for conc, _ in futuro:
         a = dict(base)
         if "ao acaso" in ctx["estrategias"]:
-            a["ao acaso"] = [sorted(ctx["rng"].sample(range(1, JOGOS[jogo][0] + 1), JOGOS[jogo][2]))]
+            a["ao acaso"] = [_acaso(jogo, ctx["rng"])]
         apostas[conc] = a
     txt = json.dumps(apostas, sort_keys=True)
     selo = hashlib.sha256(txt.encode()).hexdigest()
     # ---- revelação: só a partir daqui os resultados são lidos ----
     assert hashlib.sha256(txt.encode()).hexdigest() == selo
-    reais = {c: set(d) for c, d in futuro}
+    reais = _sorteios_de(jogo)
     reg = {}
     for conc, a in apostas.items():
         for nome, cartoes in a.items():
-            reg.setdefault(nome, []).append([len(set(c) & reais[conc]) for c in cartoes])
+            reg.setdefault(nome, []).append([_acertos(jogo, c, s) for c in cartoes for s in reais[conc]])
     r = _avaliar(jogo, reg)
     r.update(modo=f"teste cego: {escondidos} concursos escondidos ({futuro[0][0]} a {futuro[-1][0]}), "
                   f"apostas feitas de uma vez com dados até o concurso {passado[-1][0]}", hash=selo)
-    return r
+    return r, {"escondidos": escondidos, "seed": seed, "estrategias": sorted(ctx["estrategias"]),
+               "teste": [futuro[0][0], futuro[-1][0]], "minha": minha}
 
 
-def teste_continuo(jogo, concursos=300, estrategias=None, minha=None, seed=2026, eta=0.3):
+def _teste_continuo(jogo, concursos=300, estrategias=None, minha=None, seed=2026, eta=0.3):
     """Cada concurso é apostado só com os anteriores; inclui o 'aprende com erros e acertos' (Hedge), que dá
     mais peso às estratégias que vêm acertando mais."""
     if jogo not in JOGOS_LAB:
@@ -158,58 +242,105 @@ def teste_continuo(jogo, concursos=300, estrategias=None, minha=None, seed=2026,
     todos = sorted(load_draws(jogo, 100000))
     if len(todos) < concursos + 200:
         raise ValueError(f"{jogo}: baixe os resultados primeiro (há {len(todos)} concursos).")
-    N, K, mn = JOGOS[jogo][:3]
     sel = set(estrategias or ESTRATEGIAS)
     ini = len(todos) - concursos
     ctx = {"rng": random.Random(seed), "estrategias": sel, "minha": minha,
            "pop": _pop_passado(jogo, todos[ini][0]) if sel & {"menos jogados", "otimizador"} else {}}
     simples = [s for s in sel if s != "otimizador" and (s != "minha aposta" or minha)]
     peso = {s: 1.0 for s in simples}
-    reg, esp = {}, mn * K / N
+    reg, esp = {}, _referencia(jogo)[0]
+    reais = _sorteios_de(jogo)
     for t in range(ini, len(todos)):
         a = _apostas(jogo, todos[:t], ctx)
         if peso:
             escolhida = max((s for s in peso if s in a), key=lambda s: (peso[s], ctx["rng"].random()), default=None)
             if escolhida:
                 a["aprende (Hedge)"] = a[escolhida]
-        sorteio = set(todos[t][1])
-        hits = {nome: [len(set(c) & sorteio) for c in cartoes] for nome, cartoes in a.items()}
+        hits = {nome: [_acertos(jogo, c, s) for c in cartoes for s in reais[todos[t][0]]]
+                for nome, cartoes in a.items()}
         for nome, h in hits.items():
             reg.setdefault(nome, []).append(h)
         for s in peso:   # aprende com o resultado
             if s in hits:
-                peso[s] *= math.exp(eta * (hits[s][0] - esp))
+                peso[s] *= math.exp(eta * (sum(hits[s]) / len(hits[s]) - esp))
         tot = sum(peso.values()) or 1
         peso = {s: v / tot for s, v in peso.items()}
     r = _avaliar(jogo, reg)
     r.update(modo=f"teste contínuo: últimos {concursos} concursos, cada um apostado só com os anteriores",
              pesos_hedge=peso)
-    return r
+    return r, {"concursos": concursos, "seed": seed, "eta": eta, "estrategias": sorted(sel),
+               "teste": [todos[ini][0], todos[-1][0]], "minha": minha}
+
+
+def _com_sementes(fn, modo, jogo, n, estrategias, minha, seed, sementes, **kw):
+    """Roda com 'sementes' sementes: a primeira é o resultado; as outras medem a estabilidade (estratégias com
+    sorteio interno, como 'ao acaso' e o otimizador, mudam; as determinísticas não)."""
+    r, params = fn(jogo, n, estrategias, minha, seed, **kw)
+    extras = [fn(jogo, n, estrategias, minha, seed + i, **kw)[0] for i in range(1, sementes)]
+    r["sementes"] = {li["nome"]: [li["media"] - r["esperado"]] + [x["media"] - r["esperado"] for e in extras
+                                                                  for x in e["linhas"] if x["nome"] == li["nome"]]
+                     for li in r["linhas"]}
+    return _registrar(r, modo, {**params, "sementes": sementes})
+
+
+def teste_cego(jogo, escondidos=100, estrategias=None, minha=None, seed=2026, sementes=3):
+    """Esconde os últimos 'escondidos' concursos, aposta em todos de uma vez só com o passado, grava o hash das
+    apostas e só então revela os resultados. Repete com outras sementes para medir a estabilidade."""
+    return _com_sementes(_teste_cego, "cego", jogo, escondidos, estrategias, minha, seed, sementes)
+
+
+def teste_continuo(jogo, concursos=300, estrategias=None, minha=None, seed=2026, eta=0.3, sementes=1):
+    """Cada concurso apostado só com os anteriores, com o Hedge. Mais sementes = mais tempo (refaz tudo)."""
+    return _com_sementes(_teste_continuo, "contínuo", jogo, concursos, estrategias, minha, seed, sementes, eta=eta)
 
 
 def texto_resultado(r):
+    """Painel de generalização: cada dimensão separada (desempenho com IC, comparação com o acaso, incerteza,
+    estabilidade no tempo, integridade). Sem nota única: ela pareceria prova de previsão."""
     out = [f"=== LABORATÓRIO: {r['jogo'].upper()} ===", r["modo"]]
     if r.get("hash"):
         out.append(f"Impressão digital das apostas (gravada antes de ver os resultados): {r['hash'][:16]}…")
     out += [f"Pelo acaso: {r['esperado']:.2f} acertos por aposta; prêmio ({r['faixa']}) em {r['p_premio']:.1%} "
             "das apostas.", "",
-            f"{'Estratégia':<18}{'Apostas':>8}{'Média':>8}{'vs acaso':>10}{'valor-p':>9}{'ajust.':>8}"
-            f"{'Prêmios':>9}{'esperado':>10}{'Melhor':>8}  Veredito"]
+            f"{'Estratégia':<18}{'Apostas':>8}{'Média':>8}{'vs acaso':>10}{'IC 95% (acertos)':>20}{'valor-p':>9}"
+            f"{'ajust.':>8}{'Prêmios':>9}{'esperado':>10}  Veredito"]
     reais = 0
     for li in sorted(r["linhas"], key=lambda x: -x["media"]):
-        real = li["p_ajust"] < 0.05
+        pa = li.get("p_familia", li["p_ajust"])
+        real = pa < 0.05
         reais += real and li["dif"] > 0
-        ver = ("ACIMA do acaso (real)" if real and li["dif"] > 0 else "abaixo do acaso (real)" if real
-               else "igual ao acaso")
-        out.append(f"{li['nome']:<18}{li['apostas']:>8}{li['media']:>8.2f}{li['dif']:>+10.0%}{li['p']:>9.3f}"
-                   f"{li['p_ajust']:>8.3f}{li['premios']:>9}{li['premios_esp']:>10.1f}{li['melhor']:>8}  {ver}")
+        ver = ("ACIMA do acaso" if real and li["dif"] > 0 else "abaixo do acaso" if real
+               else "sem evidência de diferença")
+        out.append(f"{li['nome']:<18}{li['apostas']:>8}{li['media']:>8.2f}{li['dif']:>+10.0%}"
+                   f"{li['ic'][0]:>+10.3f} a {li['ic'][1]:<+7.3f}{li['p']:>9.3f}{pa:>8.3f}{li['premios']:>9}"
+                   f"{li['premios_esp']:>10.1f}  {ver}")
+    mde = max(li["mde"] for li in r["linhas"])
+    out += ["", f"Poder: com estes concursos, só diferenças a partir de ~{mde:.3f} acerto por aposta "
+                f"({mde / r['esperado']:.0%}) seriam detectadas. 'Sem evidência' não prova que é igual ao acaso."]
+    multi = [li for li in r["linhas"] if len(li["blocos"]) > 1]
+    if multi:
+        out += ["", "Estabilidade no tempo (diferença para o acaso a cada 100 concursos):"]
+        out += [f"  {li['nome']:<18}" + " ".join(f"{b:+.2f}" for b in li["blocos"]) for li in multi]
+    sem = {n: v for n, v in (r.get("sementes") or {}).items() if len(v) > 1}
+    if sem:
+        out += ["", f"Estabilidade entre sementes ({len(next(iter(sem.values())))} sementes; diferença para o acaso):"]
+        out += [f"  {n:<18}" + " ".join(f"{x:+.2f}" for x in v) + ("   (igual em todas: estratégia sem sorteio)"
+                                                                   if max(v) - min(v) < 1e-12 else "")
+                for n, v in sem.items()]
+    elif r.get("sementes"):
+        out += ["", "Estabilidade entre sementes: rodado com 1 semente (o teste cego usa 3)."]
     if r.get("pesos_hedge"):
         out += ["", "Pesos finais do 'aprende (Hedge)': " + ", ".join(
             f"{n} {v:.0%}" for n, v in sorted(r["pesos_hedge"].items(), key=lambda kv: -kv[1]))]
-    out += ["", ("Alguma estratégia ficou acima do acaso mesmo com a correção: repita o teste com outros "
-                 "concursos antes de acreditar (registre a hipótese primeiro)." if reais else
-                 "Nenhuma estratégia acertou mais números que o acaso. Diferenças de alguns % são sorte da amostra: "
-                 "o valor-p ajustado (abaixo de 0,05 = diferença real) já desconta o fato de testar várias ideias."),
+    out += ["", versao_regra(r["jogo"])]
+    if r.get("hipoteses"):
+        out += ["", f"Integridade: cada estratégia só viu concursos anteriores (verificado por teste automático); "
+                    f"execução nº {r['execucoes']} neste jogo, {r['hipoteses']} hipóteses testadas no total (o "
+                    f"'ajust.' corrige por todas); versão {r['versao']}, dados {r['hash_dados']}, "
+                    f"semente {r['params'].get('seed')}."]
+    out += ["", ("Alguma estratégia ficou acima do acaso mesmo com a correção: só vale como evidência se repetir em "
+                 "concursos futuros ('Registrar para o próximo sorteio')." if reais else
+                 "Nenhuma estratégia mostrou evidência de acertar mais que o acaso."),
             "Mais cartões dão mais prêmios na mesma proporção do gasto; isso aparece em 'Prêmios' x 'esperado'."]
     return "\n".join(out)
 
@@ -252,8 +383,7 @@ def conferir_registros(user):
         if not d:
             pend.append(f"  {jogo} {conc} registrado em {criado} (selo {selo[:8]}): aguardando sorteio")
             continue
-        sorteio = set(json.loads(d[0]))
-        hits = [len(set(c) & sorteio) for c in json.loads(nums)]
+        hits = [_acertos(jogo, c, s) for c in json.loads(nums) for s in _sorteios_de(jogo)[conc]]
         reg.setdefault(jogo, {}).setdefault(est, []).append(hits)
         feitos.append(f"  {jogo} {conc} {est:<16} acertos {max(hits)}" + (f" (melhor de {len(hits)} cartões)"
                                                                           if len(hits) > 1 else "")
@@ -269,6 +399,6 @@ def conferir_registros(user):
 
 def minha_aposta(jogo, txt):
     nums, _ = parse_bet(jogo, txt)
-    if len(nums) != JOGOS[jogo][2]:
+    if len(nums) != JOGOS[jogo][2] or any(isinstance(x, list) for x in nums):
         raise ValueError(f"Para o laboratório, informe exatamente {JOGOS[jogo][2]} números.")
     return nums

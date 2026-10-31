@@ -69,7 +69,7 @@ def test_popularidade_aprende_padrao_real():
     populares = set(range(1, 11))
     _concursos("megasena", 1500, populares, 0.3, 0.1, 1)
     m = o.treinar_popularidade("megasena")
-    assert m["confiavel"]
+    assert m["confiavel"] and m["confiavel"] == (m["nota_reserva"] > 0.05)   # decisão fora do teste
     w = m["pesos"]
     assert min(w[x] for x in populares) > max(w[x] for x in range(11, 61))
     assert o.fator_divisao("megasena", [1, 2, 3, 4, 5, 6]) > 1 > o.fator_divisao("megasena", [50, 51, 52, 53, 54, 55])
@@ -103,6 +103,7 @@ def test_testar_no_passado_paga_premios_reais():
     assert esp["com_premio"] == 30                     # 12 meses diferentes: Mês da Sorte garantido
     assert esp["faixas"]["Mês da Sorte"] == 30
     assert "TESTE NO PASSADO" in o.texto_teste(r)
+    assert len(r["nulo"]) == 100 and "Comparação com 100 sequências ao acaso" in o.texto_teste(r)
 
 
 def test_ganho_cartao_com_mais_dezenas():
@@ -286,3 +287,36 @@ def test_cartoes_dividem_menos_sem_perder_cobertura(monkeypatch):
         assert s[0] <= s0[0] and s[1] <= s0[1]                       # cartões não ficam mais parecidos
         assert all(len(set(c)) == o.JOGOS[jogo][2] for c in novos)
         assert sum(map(sum, novos)) < sum(map(sum, base))            # e o conjunto divide menos o prêmio
+
+
+def test_retorno_historico_usa_so_o_que_se_sabia_antes(monkeypatch):
+    # vendas do próprio concurso só saem depois do sorteio: mudar a do concurso 3 não pode mudar o retorno do 3
+    monkeypatch.setattr(core, "valor_esperado", lambda j, liquido=True: {
+        "preco": 6.0, "linhas": [("6 acertos (estimado, já dividido)", 2e-8, 0, 0), ("5 acertos", 6e-6, 0, 0.2)]})
+
+    def grava(vendas3):
+        with core.db() as c:
+            c.execute("DELETE FROM draws WHERE jogo='megasena'")
+            for i, v in enumerate([1e8, 1e8, vendas3], 1):
+                c.execute("INSERT INTO draws(jogo, concurso, dezenas, meta) VALUES(?,?,?,?)",
+                          ("megasena", i, json.dumps([1, 2, 3, 4, 5, 6]),
+                           json.dumps({"estimado": 5e7, "arrecadado": v, "premios": []})))
+        return dict((c, r) for c, _, r in core.historico_retorno("megasena", 10))[3]
+    assert grava(1e8) == grava(9e9)
+
+
+def test_cobertura_do_acaso_pela_conta_exata():
+    _, _, _, p_ale = o.comparar_cobertura("lotofacil", 3, n_sim=2000)
+    assert p_ale == pytest.approx(1 - (1 - o.prob_premio("lotofacil", extra=False)) ** 3)
+
+
+def test_experimento_reproduzivel_e_teste_reusado_vira_exploratorio(tmp_path):
+    import experimentos as ex
+    reg = str(tmp_path / "registro.jsonl")
+    a = ex.rodar("sintetico_forte", teste=200, rapido=True, registro=reg, nulos=50, log=lambda m: None)
+    b = ex.rodar("sintetico_forte", teste=200, rapido=True, registro=reg, nulos=50, log=lambda m: None)
+    assert a["confirmatorio"] and not b["confirmatorio"] and b["teste_ja_consultado_por"] == [a["id"]]
+    assert a["resultados"] == b["resultados"]                      # mesma semente, mesmo resultado
+    for campo in ("commit", "hash_dados", "teste", "atributos", "modelos", "ambiente"):
+        assert campo in a
+    assert "EXPLORATÓRIO" in ex.texto(b)

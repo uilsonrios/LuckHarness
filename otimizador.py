@@ -6,10 +6,11 @@ repetidos = mais chance de pelo menos um premiar) e a popularidade (números pou
 menos o prêmio). O modelo de popularidade aprende com o número real de ganhadores de cada concurso.
 """
 import json, math, os, random, re, threading
+from datetime import date
 
 from collections import Counter
 
-from core import (BOLAO, DATA, EXTRA, IR, IR_ISENTO, JOGOS, MAX_DEZ, MESES, _sorteios, brl, cotas_bolao, custo, db,
+from core import (BOLAO, M, MODALIDADES, DATA, EXTRA, IR, IR_ISENTO, JOGOS, MAX_DEZ, MESES, _sorteios, brl, cotas_bolao, custo, db,
                   historico_retorno, hypergeom, log, premio, premios_medios, prob_faixa, valor_esperado)
 
 OBJETIVOS = {"frequente": "ganhar algum prêmio com mais frequência",
@@ -37,7 +38,7 @@ def prob_cartoes(jogo, p_dezenas_1, k, extra=True):
     """P(algum de k cartões espalhados premiar): dezenas quase independentes, time/mês sem repetir.
     extra=False: só prêmios das dezenas (o time/mês sozinho devolve pouco mais que o preço do cartão)."""
     p_dz = 1 - (1 - p_dezenas_1) ** k
-    if jogo == "duplasena":
+    if M[jogo].get("sorteios") == 2:
         p_dz = 1 - (1 - p_dz) ** 2
     return 1 - (1 - p_dz) * (_sem_extra(jogo, k) if extra else 1)
 
@@ -46,15 +47,15 @@ def prob_premio(jogo, n=None, trevos=2, extra=True):
     """P(ganhar alguma faixa) com uma aposta de n dezenas, contando trevos, time/mês e os dois sorteios."""
     N, K, mn, fx, _ = JOGOS[jogo]
     n = n or mn
-    if jogo == "supersete":
+    if M[jogo].get("colunas"):
         p = sum(prob_faixa(jogo, h) for h in fx)
-    elif jogo == "maismilionaria":
+    elif M[jogo].get("trevos"):
         pt = _p_trevos(trevos)
         # 4+ acertos premiam com qualquer trevo; 2 e 3 acertos precisam de pelo menos 1 trevo
         p = sum(hypergeom(N, K, n, h) * (1 if h >= 4 else pt[1] + pt[2]) for h in fx)
     else:
         p = sum(hypergeom(N, K, n, h) for h in fx)
-    if jogo == "duplasena":
+    if M[jogo].get("sorteios") == 2:
         p = 1 - (1 - p) ** 2
     if extra and jogo in EXTRA:
         p = 1 - (1 - p) * (1 - EXTRA[jogo][2])
@@ -64,12 +65,12 @@ def prob_premio(jogo, n=None, trevos=2, extra=True):
 def prob_principal(jogo, n=None, trevos=2):
     N, K, mn, fx, _ = JOGOS[jogo]
     n = n or mn
-    if jogo == "supersete":
+    if M[jogo].get("colunas"):
         return 0.1 ** 7
     p = hypergeom(N, K, n, K)
-    if jogo == "maismilionaria":
+    if M[jogo].get("trevos"):
         p *= _p_trevos(trevos)[2]
-    if jogo == "duplasena":
+    if M[jogo].get("sorteios") == 2:
         p = 1 - (1 - p) ** 2
     return p
 
@@ -89,6 +90,45 @@ def _um_em(p):
 
 
 # ---------------- otimizador ----------------
+def formatos_supersete():
+    """Formatos oficiais da Super Sete: (total de números, quantos em cada coluna). 7 = um por coluna; 8 a 14 = 1 ou
+    2 por coluna; 15 a 21 = 2 ou 3 por coluna (loterias.caixa.gov.br, 31/10/2026)."""
+    return {t: ([2] * (t - 7) + [1] * (14 - t) if t <= 14 else [3] * (t - 14) + [2] * (21 - t)) for t in range(7, 22)}
+
+
+def padroes_supersete(tam):
+    """Para cada conjunto de colunas acertadas: (probabilidade, apostas simples com h colunas certas, h = 0..7).
+    Cada coluna acerta com chance (números marcados nela)/10, independente das outras: conta exata, 128 casos."""
+    from itertools import product
+    out = []
+    for padrao in product((True, False), repeat=7):
+        p, dist = 1.0, [1]
+        for s_c, acertou in zip(tam, padrao):
+            p *= s_c / 10 if acertou else 1 - s_c / 10
+            nova = [0] * (len(dist) + 1)
+            for h, q in enumerate(dist):
+                nova[h] += q * (s_c - acertou)
+                nova[h + 1] += q * acertou
+            dist = nova
+        out.append((p, dist))
+    return out
+
+
+def cartoes_supersete(k, tam, rng=random):
+    """k apostas da Super Sete com tam[c] números na coluna c, usando os dígitos de cada coluna por igual."""
+    uso = [[0] * 10 for _ in range(7)]
+    cards = []
+    for _ in range(k):
+        card = []
+        for c in range(7):
+            dig = sorted(range(10), key=lambda x: (uso[c][x], rng.random()))[:tam[c]]
+            for x in dig:
+                uso[c][x] += 1
+            card.append(dig[0] if len(dig) == 1 else sorted(dig))
+        cards.append(card)
+    return cards
+
+
 def opcoes(orcamento, jogos=None):
     """Todas as formas de gastar até 'orcamento' por semana: jogo, dezenas por cartão e quantidade de cartões."""
     out = []
@@ -99,17 +139,27 @@ def opcoes(orcamento, jogos=None):
         except Exception:
             log.warning("sem retorno para %s", j, exc_info=True)
             ret = None
-        for n in range(mn, (mn if j == "supersete" else MAX_DEZ[j]) + 1):
-            tv = [1, 2] if j == "maismilionaria" else []
-            c = custo(j, list(range(1, n + 1)), tv)
+        for n in range(mn, (M[j]["escolha"][1] if M[j].get("colunas") else MAX_DEZ[j]) + 1):
+            tv = [1, 2] if M[j].get("trevos") else []
+            tam = formatos_supersete()[n] if M[j].get("colunas") else None
+            c = JOGOS[j][4] * math.prod(tam) if tam else custo(j, list(range(1, n + 1)), tv)
             k = int(orcamento // c)
             if k < 1:
                 break
+            if tam and n > mn:   # Super Sete com mais números: conta exata por colunas
+                pads = padroes_supersete(tam)
+                p1 = sum(pp for pp, d in pads if any(d[h] for h in JOGOS[j][3]))
+                p_dz = 1 - (1 - p1) ** k
+                out.append({"jogo": j, "tipo": "simples", "n": n, "k": k, "custo": c, "gasto": k * c, "p_semana": p_dz,
+                            "p_dezenas": p_dz, "tamanhos": tam,
+                            "p_principal_ano": 1 - (1 - math.prod(t / 10 for t in tam)) ** (k * 52), "retorno": ret,
+                            "plano": f"{k} aposta(s) de {n} números"})
+                continue
             if 2 <= k <= COB_MAX_CARTOES and n == mn:
                 p_dz = cobertura_dezenas(j, k)
             else:
                 pd = prob_premio(j, n, extra=False)
-                if j == "duplasena":
+                if M[j].get("sorteios") == 2:
                     pd = 1 - (1 - pd) ** 0.5   # prob_cartoes aplica os dois sorteios
                 p_dz = prob_cartoes(j, pd, k, extra=False)
             ps = 1 - (1 - p_dz) * _sem_extra(j, k)
@@ -126,7 +176,7 @@ def _opcoes_bolao(j, orcamento, ret):
     a da aposta grande inteira, mas você recebe 1/cotas de cada prêmio."""
     out = []
     for n in sorted(BOLAO.get(j, {})):
-        c = custo(j, list(range(1, n + 1)), [1, 2] if j == "maismilionaria" else [])
+        c = custo(j, list(range(1, n + 1)), [1, 2] if M[j].get("trevos") else [])
         q = cotas_bolao(j, n, c, orcamento)   # regras da Caixa: cota mínima e máximo de cotas
         if not q:
             continue
@@ -158,7 +208,7 @@ def _opcoes_fechamento(j, orcamento, ret):
         # garantia: se t das v dezenas saírem, um cartão faz t acertos; fora disso ainda pode premiar
         p_gar = sum(hypergeom(N, K, v, h) for h in range(t, min(v, K) + 1))
         p = simular_cobertura(j, cards, 4000, random.Random(v))
-        if j == "duplasena":
+        if M[j].get("sorteios") == 2:
             p = 1 - (1 - p) ** 2
         p_dz = p
         p = 1 - (1 - p) * _sem_extra(j, len(cards))
@@ -242,13 +292,13 @@ def _pagamento(jogo, n, h, th, med):
     """Quanto um cartão de n dezenas com h acertos (e th trevos) recebe, com os valores típicos pagos."""
     N, K, mn, fx, _ = JOGOS[jogo]
     pr = list(med.items())
-    if jogo == "supersete":
+    if M[jogo].get("colunas"):
         p = premio(jogo, h, 0, pr) if h in fx else None
         return _liquido(p[1]) if p and p[1] else 0.0
+    from core import contidas
     tot = 0.0
-    for j in fx:
-        qtd = math.comb(h, j) * math.comb(n - h, mn - j)
-        p = premio(jogo, j, th, pr) if qtd else None
+    for j, t2, qtd in contidas(jogo, n, h, 2 if M[jogo].get("trevos") else 0, th):
+        p = premio(jogo, j, t2, pr)
         if p and p[1]:
             tot += qtd * _liquido(p[1])
     return tot
@@ -258,18 +308,18 @@ def _chance_alvo(jogo, n, alvo, med, cotas=1):
     """P(um cartão de n dezenas pagar pelo menos 'alvo' para quem tem 1 de 'cotas' partes) e o menor número de
     acertos que chega lá."""
     N, K, mn, fx, _ = JOGOS[jogo]
-    ths = _p_trevos(2) if jogo == "maismilionaria" else {0: 1.0}
+    ths = _p_trevos(2) if M[jogo].get("trevos") else {0: 1.0}
     p, acertos = 0.0, set()
-    for h in range(0, (7 if jogo == "supersete" else min(n, K)) + 1):
-        ph = prob_faixa(jogo, h) if jogo == "supersete" else hypergeom(N, K, n, h)
+    for h in range(0, (7 if M[jogo].get("colunas") else min(n, K)) + 1):
+        ph = prob_faixa(jogo, h) if M[jogo].get("colunas") else hypergeom(N, K, n, h)
         for th, pt in ths.items():
             if _pagamento(jogo, n, h, th, med) / cotas >= alvo:
                 p += ph * pt
                 acertos.add(h)
-    if jogo == "duplasena":
+    if M[jogo].get("sorteios") == 2:
         p = 1 - (1 - p) ** 2
     altos = sorted(h for h in acertos if h)
-    txt = ((f"{altos[0]}+" if altos[0] < (7 if jogo == "supersete" else K) else str(altos[0])) if altos else "")
+    txt = ((f"{altos[0]}+" if altos[0] < (7 if M[jogo].get("colunas") else K) else str(altos[0])) if altos else "")
     if 0 in acertos:   # Lotomania paga quem erra todos
         txt = f"{txt} ou 0" if txt else "0"
     return p, txt
@@ -287,9 +337,24 @@ def aposta_minima(orcamento, alvo):
         med = premios_medios(j, 300)[0]
         if not med:
             continue
-        tv = [1, 2] if j == "maismilionaria" else []
+        tv = [1, 2] if M[j].get("trevos") else []
         cands = []
-        for n in range(mn, (mn if j == "supersete" else MAX_DEZ[j]) + 1):
+        for n in range(mn, (M[j]["escolha"][1] if M[j].get("colunas") else MAX_DEZ[j]) + 1):
+            if M[j].get("colunas") and n > mn:
+                tam = formatos_supersete()[n]
+                c = preco * math.prod(tam)
+                if c > orcamento:
+                    break
+                k = int(orcamento // c)
+                ok = [(pp, d) for pp, d in padroes_supersete(tam)
+                      if sum(q * _pagamento(j, 7, h, 0, med) for h, q in enumerate(d)) >= alvo]
+                p1 = sum(pp for pp, _ in ok)
+                hs = [min(h for h, q in enumerate(d) if q and _pagamento(j, 7, h, 0, med)) for _, d in ok
+                      if any(q and _pagamento(j, 7, h, 0, med) for h, q in enumerate(d))]
+                cands.append({"jogo": j, "tipo": "simples", "n": n, "k": k, "custo": c, "gasto": k * c,
+                              "p": 1 - (1 - p1) ** k, "h_min": f"{min(hs)}+" if hs else "", "tamanhos": tam,
+                              "plano": f"{k} aposta(s) de {n} números"})
+                continue
             c = custo(j, list(range(1, n + 1)), tv)
             if c <= orcamento:
                 k = int(orcamento // c)
@@ -345,17 +410,17 @@ def texto_aposta_minima(orcamento, alvo, ranking):
 def extras_espalhados(jogo, k, rng=random):
     """Trevos/time/mês sem repetir entre os cartões: com 12 cartões no Dia de Sorte, todos os meses ficam
     cobertos e o Mês da Sorte sai garantido em todo concurso."""
-    if jogo == "maismilionaria":
+    if M[jogo].get("trevos"):
         pares = [[a, b] for a in range(1, 7) for b in range(a + 1, 7)]
         rng.shuffle(pares)
         return [pares[i % 15] for i in range(k)]
-    if jogo == "diadesorte":
+    if M[jogo].get("extra", ("",))[0] == "mes":
         meses = MESES[:]
         rng.shuffle(meses)
         return [[meses[i % 12]] for i in range(k)]
-    if jogo == "timemania":
-        from core import times_conhecidos
-        times = times_conhecidos()
+    if M[jogo].get("extra", ("",))[0] == "time":
+        from core import times_validos
+        times = times_validos()[0]
         if not times:
             return [[] for _ in range(k)]
         esc = rng.sample(times, min(k, len(times)))
@@ -370,7 +435,7 @@ def cartoes_espalhados(jogo, k, n=None, pesos=None, rng=random):
     N, _, mn = JOGOS[jogo][:3]
     n = n or mn
     pesos = pesos or {}
-    if jogo == "supersete":
+    if M[jogo].get("colunas"):
         uso = [[0] * 10 for _ in range(7)]
         cards = []
         for _ in range(k):
@@ -403,10 +468,11 @@ def cartoes_espalhados(jogo, k, n=None, pesos=None, rng=random):
 
 def _premiou(jogo, card, sorteio, trevos_card=(), trevos_sorteio=()):
     fx = JOGOS[jogo][3]
-    if jogo == "supersete":
-        return sum(a == b for a, b in zip(card, sorteio)) in fx
+    if M[jogo].get("colunas"):
+        from core import dist_colunas
+        return any(q for h, q in enumerate(dist_colunas(card, sorteio)) if h in fx)
     h = len(set(card) & sorteio)
-    if jogo == "maismilionaria":
+    if M[jogo].get("trevos"):
         th = len(set(trevos_card) & trevos_sorteio)
         return h >= 4 or (h in (2, 3) and th >= 1)
     return h in fx
@@ -418,13 +484,13 @@ def simular_cobertura(jogo, cards, n_sim=20000, rng=random, trevos=None):
     trevos = trevos or [[1, 2]] * len(cards)
     ok = 0
     for _ in range(n_sim):
-        if jogo == "supersete":
+        if M[jogo].get("colunas"):
             s = [rng.randrange(10) for _ in range(7)]
         else:
             s = set(rng.sample(range(1, N + 1), K))
-        ts = set(rng.sample(range(1, 7), 2)) if jogo == "maismilionaria" else set()
+        ts = set(rng.sample(range(1, 7), 2)) if M[jogo].get("trevos") else set()
         ok_s = any(_premiou(jogo, c, s, t, ts) for c, t in zip(cards, trevos))
-        if jogo == "duplasena" and not ok_s:   # 2º sorteio do mesmo concurso
+        if M[jogo].get("sorteios") == 2 and not ok_s:   # 2º sorteio do mesmo concurso
             s2 = set(rng.sample(range(1, N + 1), K))
             ok_s = any(_premiou(jogo, c, s2) for c in cards)
         ok += ok_s
@@ -442,7 +508,7 @@ def cobertura_dezenas(jogo, k, n=None, n_sim=4000):
     if chave not in _COB:
         rng = random.Random(7)
         cards = cartoes_espalhados(jogo, k, n, None, rng)
-        tv = extras_espalhados(jogo, k, rng) if jogo == "maismilionaria" else None
+        tv = extras_espalhados(jogo, k, rng) if M[jogo].get("trevos") else None
         _COB[chave] = simular_cobertura(jogo, cards, n_sim, random.Random(8), tv)
     return _COB[chave]
 
@@ -453,15 +519,13 @@ def comparar_cobertura(jogo, k, n=None, n_sim=20000, seed=7):
     n = n or mn
     rng = random.Random(seed)
     esp = sugestoes(jogo, k, n, rng)   # mesma fonte do "Sugerir apostas"
-    if jogo == "supersete":
-        aleat = [[rng.randrange(10) for _ in range(7)] for _ in range(k)]
-    else:
-        aleat = [sorted(rng.sample(range(1, N + 1), n)) for _ in range(k)]
-    tv = [sorted(rng.sample(range(1, 7), 2)) for _ in range(k)] if jogo == "maismilionaria" else None
-    tv_esp = extras_espalhados(jogo, k, rng) if jogo == "maismilionaria" else None
+    tv_esp = extras_espalhados(jogo, k, rng) if M[jogo].get("trevos") else None
     p_esp = simular_cobertura(jogo, esp, n_sim, random.Random(seed + 1), tv_esp)
-    p_ale = simular_cobertura(jogo, aleat, n_sim, random.Random(seed + 1), tv)
-    return esp, tv_esp, p_esp, p_ale
+    # cartões ao acaso são independentes dado o sorteio: conta exata, sem depender de um sorteio de cartões
+    p1 = prob_premio(jogo, n, extra=False)
+    if M[jogo].get("sorteios") == 2:
+        p1 = 1 - (1 - p1) ** 0.5   # simular_cobertura confere um sorteio só
+    return esp, tv_esp, p_esp, 1 - (1 - p1) ** k
 
 
 # ---------------- modelo de popularidade ----------------
@@ -470,8 +534,7 @@ def comparar_cobertura(jogo, k, n=None, n_sim=20000, seed=7):
 # final vem de concursos que nem o treino nem a escolha viram.
 
 # colunas do volante de cada jogo (desenhos no bilhete: linhas, colunas)
-VOLANTE = {"megasena": 10, "quina": 10, "duplasena": 10, "timemania": 10, "lotofacil": 5, "diadesorte": 7,
-           "lotomania": 10, "maismilionaria": 10}
+VOLANTE = {j: m["volante"] for j, m in MODALIDADES.items() if m.get("volante")}
 PADROES = ["até 31 (datas)", "todos até 31", "maior sequência", "vizinhos", "mesma linha do volante",
            "mesma coluna do volante", "mesma dezena", "múltiplos de 5", "progressão aritmética",
            "repetidos do concurso anterior", "soma fora do centro", "desequilíbrio par/ímpar", "espalhamento",
@@ -494,7 +557,7 @@ def _modelo(jogo):
 def pesos_popularidade(jogo):
     """Peso de cada número (para escolher números pouco jogados nos cartões). None se não houver modelo confiável."""
     m = _modelo(jogo)
-    if not m or not m.get("confiavel") or jogo == "supersete":
+    if not m or not m.get("confiavel") or M[jogo].get("colunas"):
         return None
     return {int(k): v for k, v in m["pesos"].items()}
 
@@ -503,7 +566,7 @@ def pesos_ate(jogo, ate):
     """Pesos de popularidade treinados só com concursos anteriores a 'ate' (testes no passado sem olhar o futuro).
     {} se houver poucos concursos antes de 'ate'."""
     am = [a for a in _amostras(jogo) if a["concurso"] < ate]
-    if len(am) < 200 or jogo == "supersete":
+    if len(am) < 200 or M[jogo].get("colunas"):
         return {}
     cfg = {"nome": "passado", "modelo": "ridge", "alvo": "multi", "padroes": False, "meia_vida": 500}
     c = int(len(am) * 0.8)
@@ -543,26 +606,28 @@ def _padroes(jogo, dz, anterior):
 
 def _base(jogo):
     """Quantas entradas 'um-quente' o jogo tem: números (ou coluna x dígito na Super Sete) e trevos."""
-    if jogo == "supersete":
+    if M[jogo].get("colunas"):
         return 70
-    return JOGOS[jogo][0] + (6 if jogo == "maismilionaria" else 0)
+    return JOGOS[jogo][0] + (6 if M[jogo].get("trevos") else 0)
 
 
 def _ativos(jogo, a):
     """Índices das entradas ligadas para um sorteio/cartão."""
-    if jogo == "supersete":
+    if M[jogo].get("colunas"):
         return [c * 10 + d for c, d in enumerate(a["dz"])]
     N = JOGOS[jogo][0]
-    tv = [int(t) for t in a.get("trevos", [])] if jogo == "maismilionaria" else []
+    tv = [int(t) for t in a.get("trevos", [])] if M[jogo].get("trevos") else []
     return [x - 1 for x in a["dz"]] + [N + t - 1 for t in tv]
 
 
-def _faixas_alvo(jogo, meta):
-    """(chance de uma aposta simples cair na faixa, ganhadores) para cada faixa de acertos do concurso."""
+def _faixas_alvo(jogo, meta, sorteio=1):
+    """(chance de uma aposta simples cair na faixa, ganhadores) para cada faixa de acertos do concurso. Dupla Sena:
+    a 1ª metade das faixas é do 1º sorteio e a 2ª, do 2º."""
     N, K, mn = JOGOS[jogo][:3]
     pr, gan = meta.get("premios", []), meta.get("ganhadores", [])
-    if jogo == "duplasena":   # só o 1º sorteio: as dezenas guardadas são as dele
-        pr, gan = pr[:len(pr) // 2], gan[:len(gan) // 2]
+    if M[jogo].get("sorteios") == 2:
+        h = len(pr) // 2
+        pr, gan = (pr[:h], gan[:h]) if sorteio == 1 else (pr[h:], gan[h:])
     pt = _p_trevos(2)
     out = []
     for (desc, _), g in zip(pr, gan):
@@ -571,8 +636,8 @@ def _faixas_alvo(jogo, meta):
         if not mt:
             continue
         h = int(mt.group(1))
-        p = prob_faixa(jogo, h) if jogo == "supersete" else hypergeom(N, K, mn, h)
-        if jogo == "maismilionaria":
+        p = prob_faixa(jogo, h) if M[jogo].get("colunas") else hypergeom(N, K, mn, h)
+        if M[jogo].get("trevos"):
             p *= (pt[2] if "2 trevos" in d else pt[0] + pt[1] if "1 ou nenhum" in d else pt[1] if "1 trevo" in d
                   else 1)
         out.append((p, g))
@@ -587,14 +652,19 @@ def _amostras(jogo):
     rows = db().execute("SELECT concurso, dezenas, meta FROM draws WHERE jogo=? AND meta IS NOT NULL "
                         "ORDER BY concurso", (jogo,)).fetchall()
     out, anterior = [], []
-    for conc, dz, meta in rows:
-        dz, m = json.loads(dz), json.loads(meta)
+    sorteios = []
+    for conc, dz, meta in rows:   # Dupla Sena: cada sorteio é um exemplo, com os ganhadores da sua metade
+        m = json.loads(meta)
+        sorteios.append((conc, json.loads(dz), m, 1))
+        if M[jogo].get("sorteios") == 2 and m.get("dezenas2"):
+            sorteios.append((conc, m["dezenas2"], m, 2))
+    for conc, dz, m, qual in sorteios:
         ant, anterior = anterior, dz
         vendas = m.get("arrecadado") or 0
         if not vendas or not ant or not m.get("ganhadores"):
             continue
         apostas = vendas / preco
-        fx = [(apostas * p, g) for p, g in _faixas_alvo(jogo, m) if apostas * p >= 2]
+        fx = [(apostas * p, g) for p, g in _faixas_alvo(jogo, m, qual) if apostas * p >= 2]
         if not fx:
             continue
         e0, g0 = max(fx)
@@ -602,7 +672,7 @@ def _amostras(jogo):
             continue
         ys = [(min(e, 500.0), math.log((g + 0.5) / (e + 0.5))) for e, g in fx]
         peso = sum(w for w, _ in ys)
-        out.append({"concurso": conc, "dz": dz, "ant": ant, "trevos": [int(t) for t in m.get("trevos", [])],
+        out.append({"concurso": conc, "data": m.get("data"), "dz": dz, "ant": ant, "trevos": [int(t) for t in m.get("trevos", [])],
                     "y_baixa": math.log((g0 + 0.5) / e0), "y_multi": sum(w * y for w, y in ys) / peso,
                     "prec": min(1.0, peso / 100)})
     return out
@@ -638,7 +708,7 @@ def _resolver(A, b):
 def _entradas(jogo, dados, cfg, norm=None):
     """Entradas esparsas [(índice, valor)] por exemplo; padrões padronizados com média/desvio do treino."""
     B = _base(jogo)
-    com_pad = cfg["padroes"] and jogo != "supersete"
+    com_pad = cfg["padroes"] and not M[jogo].get("colunas")
     # modelos salvos antes dos padrões novos usam só os primeiros (os novos foram acrescentados no fim)
     F = (len(norm[0]) if norm is not None else len(PADROES)) if com_pad else 0
     feats = [_padroes(jogo, a["dz"], a["ant"])[:F] for a in dados] if com_pad else []
@@ -778,6 +848,19 @@ CONFIGS = [{"nome": f"{m}|{al}|{'padrões' if p else 'números'}|"
            for jn in (0, 500, 1000)]
 
 
+# Em 31/10/2026 (v1.14.2) padrões e janelas foram escolhidos olhando a nota de teste: ela só volta a ser uma
+# estimativa independente quando o período de teste começar depois dessa data.
+POP_TESTE_CONSULTADO = date(2026, 10, 31)
+
+
+def _data(s):
+    try:
+        d, m, a = map(int, s.split("/"))
+        return date(a, m, d)
+    except (AttributeError, ValueError):
+        return date.min
+
+
 def treinar_popularidade(jogo, teste=0.2, rapido=False):
     """Compara configurações (alvo, padrões, peso dos recentes, ridge x rede de 2 camadas x média dos dois).
     Escolha pela validação (último quarto do treino); nota final no teste (últimos 20% dos concursos), sempre
@@ -788,8 +871,9 @@ def treinar_popularidade(jogo, teste=0.2, rapido=False):
                          "Baixe os resultados de novo e tente.")
     corte = int(len(dados) * (1 - teste))
     treino, prova = dados[:corte], dados[corte:]
-    c2 = int(len(treino) * 0.75)
-    fit, val = treino[:c2], treino[c2:]
+    # ajuste | validação (escolhe a configuração) | reserva (decide se o modelo é usado) | teste (só relata)
+    c1, c2 = int(len(treino) * 0.6), int(len(treino) * 0.8)
+    fit, val, reserva = treino[:c1], treino[c1:c2], treino[c2:]
     yv, yp = [a["y_multi"] for a in val], [a["y_multi"] for a in prova]
     notas = {}
     for cfg in CONFIGS:
@@ -802,6 +886,7 @@ def treinar_popularidade(jogo, teste=0.2, rapido=False):
             m = _ajusta(jogo, fit, cfg)
             notas[cfg["nome"]] = (_r2(_prever_lote(jogo, m, val), yv), cfg)
     nome, (nota_val, cfg) = max(notas.items(), key=lambda kv: kv[1][0])
+    nota_reserva = _r2(_prever_lote(jogo, _ajusta(jogo, fit + val, cfg), reserva), [a["y_multi"] for a in reserva])
     final = _ajusta(jogo, treino, cfg)
     r2_teste = _r2(_prever_lote(jogo, final, prova), yp)
     base_cfg = {"nome": "v1", "modelo": "ridge", "alvo": "baixa", "padroes": False, "meia_vida": 0}
@@ -809,14 +894,15 @@ def treinar_popularidade(jogo, teste=0.2, rapido=False):
     r2_base = _r2(_prever_lote(jogo, base, prova), yp)
     B = _base(jogo)
     coef = final.get("coef") or [0.0] * final["D"]
-    if jogo == "supersete":
+    if M[jogo].get("colunas"):
         pesos = {}
     else:
         N = JOGOS[jogo][0]
         media = sum(coef[:N]) / N
         pesos = {i + 1: coef[i] - media for i in range(N)}
     modelo = {"jogo": jogo, "versao": nome, **final, "pesos": pesos, "r2_teste": r2_teste, "r2_base": r2_base,
-              "nota_validacao": nota_val, "confiavel": r2_teste > 0.05, "concursos": len(dados),
+              "nota_validacao": nota_val, "nota_reserva": nota_reserva, "confiavel": nota_reserva > 0.05,
+              "teste_independente": _data(prova[0].get("data")) > POP_TESTE_CONSULTADO, "concursos": len(dados),
               "inicio_teste": prova[0]["concurso"], "anterior": dados[-1]["dz"], "base": B,
               "ranking": sorted(((n, v[0]) for n, v in notas.items()), key=lambda t: -t[1])}
     with open(_pop_path(jogo), "w", encoding="utf8") as f:
@@ -829,12 +915,17 @@ def texto_popularidade(m):
     out = [f"=== MODELO DE POPULARIDADE: {jogo.upper()} ({m['concursos']} concursos) ===",
            "Aprende o que o público mais joga comparando, em cada concurso, quantas pessoas ganharam com quantas "
            "deveriam ganhar pelo acaso.", "",
-           f"Nota no teste (concursos recentes que nem o treino nem a escolha viram): {m['r2_teste']:.1%}"
-           f"   |   modelo antigo no mesmo teste: {m['r2_base']:.1%}",
+           f"Nota no teste (correlação² entre previsto e real, em concursos recentes que o treino não viu): "
+           f"{m['r2_teste']:.1%}   |   modelo antigo no mesmo teste: {m['r2_base']:.1%}"
+           + ("" if m.get("teste_independente", True) else
+              "\n  (este período de teste já foi consultado ao escolher a configuração em 31/10/2026: a nota não é "
+              "uma estimativa independente)"),
+           f"Decisão de uso: nota {m.get('nota_reserva', m['r2_teste']):.1%} num trecho reservado (nem a escolha "
+           "nem o teste entram nela).",
            f"Configuração escolhida: {m['versao']}",
            "  -> " + ("CONFIÁVEL: explica parte real da divisão de prêmios e é usado nos cartões."
                       if m["confiavel"] else
-                      "NÃO CONFIÁVEL: abaixo de 5% no teste. O app não usa este modelo (seria ruído)."), "",
+                      "NÃO CONFIÁVEL: abaixo de 5% no trecho reservado. O app não usa este modelo (seria ruído)."), "",
            "Configurações comparadas (nota na validação):"]
     out += [f"  {n:<40}{v:>7.1%}" for n, v in m["ranking"][:6]]
     w = {int(k): v for k, v in m.get("pesos", {}).items()}
@@ -845,7 +936,7 @@ def texto_popularidade(m):
         out += ["", "Mais jogados (dividem mais o prêmio): " + ", ".join(f"{x:02d} ({fx(w[x])})" for x in mais),
                 "Menos jogados (dividem menos):        " + ", ".join(f"{x:02d} ({fx(w[x])})" for x in menos)]
     coef = m.get("coef") or []
-    if m["cfg"]["padroes"] and len(coef) > m["base"] and jogo != "supersete":
+    if m["cfg"]["padroes"] and len(coef) > m["base"] and not M[jogo].get("colunas"):
         efeitos = sorted(zip(PADROES, coef[m["base"]:]), key=lambda p: -abs(p[1]))
         out += ["", "Padrões de escolha (efeito sobre o número de ganhadores):"]
         out += [f"  {nome:<34}{math.exp(v) - 1:+.0%}" for nome, v in efeitos if abs(v) >= 0.01]
@@ -855,6 +946,8 @@ def texto_popularidade(m):
 
 def fator_divisao(jogo, card, trevos=()):
     """Quantas vezes mais (ou menos) gente que a média deve ter o mesmo cartão, pelo modelo treinado."""
+    if M[jogo].get("colunas") and any(isinstance(c, list) for c in card):
+        return None   # o modelo só conhece apostas de um número por coluna
     m = _modelo(jogo)
     if not m or not m.get("confiavel"):
         return None
@@ -959,18 +1052,19 @@ def _ganho_cartao(jogo, card, tv, d, meta):
     N, K, mn, fx, _ = JOGOS[jogo]
     pr = meta.get("premios", [])
     ganho, faixas = 0.0, []
-    if jogo == "supersete":
-        h = sum(a == b for a, b in zip(card, d))
-        p = premio(jogo, h, 0, pr) if h in fx else None
-        return (p[1] or 0, [p[0]]) if p else (0.0, [])
+    if M[jogo].get("colunas"):
+        from core import dist_colunas
+        for h, qtd in enumerate(dist_colunas(card, d)):
+            p = premio(jogo, h, 0, pr) if h in fx and qtd else None
+            if p and p[1]:
+                ganho += qtd * p[1]
+                faixas.append(p[0])
+        return ganho, faixas
+    from core import contidas
     h = len(set(card) & set(d))
-    th = len(set(tv) & set(meta.get("trevos", []))) if jogo == "maismilionaria" else 0
-    n = len(card)
-    for j in fx:
-        qtd = math.comb(h, j) * math.comb(n - h, mn - j)
-        if not qtd:
-            continue
-        p = premio(jogo, j, th, pr)
+    th = len(set(tv) & set(meta.get("trevos", []))) if M[jogo].get("trevos") else 0
+    for j, t2, qtd in contidas(jogo, len(card), h, len(tv) if M[jogo].get("trevos") else 0, th):
+        p = premio(jogo, j, t2, pr)
         if p and p[1]:
             ganho += qtd * p[1]
             faixas.append(p[0])
@@ -981,18 +1075,20 @@ def _ganho_cartao(jogo, card, tv, d, meta):
     return ganho, faixas
 
 
-def _extra_acaso(jogo, rng):
-    if jogo == "diadesorte":
+def _extra_acaso(jogo, rng, times=None):
+    if M[jogo].get("extra", ("",))[0] == "mes":
         return [rng.choice(MESES)]
-    from core import times_conhecidos
-    times = times_conhecidos()
+    if times is None:
+        from core import times_validos
+        times = times_validos()[0]
     return [rng.choice(times)] if times else []
 
 
-def testar_no_passado(jogo, k, n=None, concursos=104, retorno_min=0.0, seed=7):
+def testar_no_passado(jogo, k, n=None, concursos=104, retorno_min=0.0, seed=7, nulos=100):
     """Joga o plano (k cartões espalhados de n dezenas) em cada um dos últimos concursos, com os prêmios
     reais pagos. Com retorno_min, só joga quando o retorno estimado antes do sorteio passava do mínimo.
-    Compara com cartões ao acaso e com 'jogar sempre'."""
+    Compara com a distribuição de 'nulos' sequências de cartões ao acaso (mesmos concursos e gasto), não com uma
+    só: uma sequência isolada varia muito com a semente."""
     N, K, mn, _, _ = JOGOS[jogo]
     n = n or mn
     rows = db().execute("SELECT concurso, dezenas, meta FROM draws WHERE jogo=? AND meta IS NOT NULL "
@@ -1003,32 +1099,42 @@ def testar_no_passado(jogo, k, n=None, concursos=104, retorno_min=0.0, seed=7):
     if retorno_min > 0:
         filtro = {c: r for c, _, r in historico_retorno(jogo, concursos + 1)}
     rng = random.Random(seed)
-    preco = custo(jogo, list(range(1, n + 1)), [1, 2] if jogo == "maismilionaria" else [])
+    tam = formatos_supersete()[n] if M[jogo].get("colunas") and n > 7 else None
+    preco = (JOGOS[jogo][4] * math.prod(tam) if tam
+             else custo(jogo, list(range(1, n + 1)), [1, 2] if M[jogo].get("trevos") else []))
     # o modelo salvo pode ter visto os concursos testados: retreina só com os anteriores ao 1º deles
     pop_ate = rows[0][0] if pesos_popularidade(jogo) else None
     pesos = (pesos_ate(jogo, pop_ate) or None) if pop_ate else None
 
-    def plano(espalhado):
+    sorteios = {conc: list(_sorteios(jogo, [r])) for r in rows for conc in [r[0]]}
+    if M[jogo].get("extra", ("",))[0] == "time":
+        from core import times_validos
+        times = times_validos()[0]
+    else:
+        times = None
+
+    def plano(espalhado, rng):
         res = {"jogados": 0, "gasto": 0.0, "ganho": 0.0, "com_premio": 0, "maior": 0.0, "faixas": Counter()}
         for conc, _, _ in rows:
             if filtro is not None and filtro.get(conc, 0) < retorno_min:
                 continue
             if espalhado:
-                cards = cartoes_espalhados(jogo, k, n, pesos, rng)
-            elif jogo == "supersete":
-                cards = [[rng.randrange(10) for _ in range(7)] for _ in range(k)]
+                cards = cartoes_supersete(k, tam, rng) if tam else cartoes_espalhados(jogo, k, n, pesos, rng)
+            elif M[jogo].get("colunas"):
+                cards = [[(rng.randrange(10) if t == 1 else sorted(rng.sample(range(10), t))) for t in (tam or [1] * 7)]
+                         for _ in range(k)]
             else:
                 cards = [sorted(rng.sample(range(1, N + 1), n)) for _ in range(k)]
             if espalhado:
                 tvs = extras_espalhados(jogo, k, rng)
-            elif jogo == "maismilionaria":
+            elif M[jogo].get("trevos"):
                 tvs = [sorted(rng.sample(range(1, 7), 2)) for _ in cards]
             elif jogo in EXTRA:
-                tvs = [e for _ in cards for e in [_extra_acaso(jogo, rng)]]
+                tvs = [_extra_acaso(jogo, rng, times) for _ in cards]
             else:
                 tvs = [[] for _ in cards]
             g_conc = 0.0
-            for _, d, meta in _sorteios(jogo, [r for r in rows if r[0] == conc]):
+            for _, d, meta in sorteios[conc]:
                 for c, t in zip(cards, tvs):
                     g, fxs = _ganho_cartao(jogo, c, t, d, meta)
                     g_conc += g
@@ -1040,8 +1146,12 @@ def testar_no_passado(jogo, k, n=None, concursos=104, retorno_min=0.0, seed=7):
             res["maior"] = max(res["maior"], g_conc)
         return res
 
-    return {"jogo": jogo, "k": k, "n": n, "concursos": len(rows), "retorno_min": retorno_min,
-            "pop_ate": pop_ate if pesos else None, "esp": plano(True), "acaso": plano(False)}
+    from core import preco_vigente
+    sem_preco = sum(not preco_vigente(jogo, conc)[1] for conc, _, _ in rows)
+    return {"jogo": jogo, "k": k, "n": n, "concursos": len(rows), "retorno_min": retorno_min, "sem_preco": sem_preco,
+            "pop_ate": pop_ate if pesos else None, "esp": plano(True, rng), "acaso": plano(False, rng),
+            "nulo": [(x["com_premio"], x["ganho"] / x["gasto"] if x["gasto"] else 0.0)
+                     for x in (plano(False, random.Random(seed * 1000 + i)) for i in range(nulos))]}
 
 
 def texto_teste(r):
@@ -1063,7 +1173,20 @@ def texto_teste(r):
            + (f" Números pouco jogados: modelo treinado só com concursos anteriores ao {r['pop_ate']}."
               if r.get("pop_ate") else ""), ""]
     out += bloco("Plano do Otimizador (cartões espalhados)", r["esp"]) + [""]
-    out += bloco("Mesmo gasto com cartões ao acaso", r["acaso"])
+    out += bloco("Mesmo gasto com cartões ao acaso (uma das sequências)", r["acaso"])
+    nulo = r.get("nulo") or []
+    if nulo and r["esp"]["jogados"]:
+        cp, rt = sorted(x[0] for x in nulo), sorted(x[1] for x in nulo)
+        e, ret = r["esp"]["com_premio"], r["esp"]["ganho"] / r["esp"]["gasto"]
+        q = lambda v: (v[len(v) // 20], v[len(v) * 19 // 20])
+        out += ["", f"Comparação com {len(nulo)} sequências ao acaso (mesmos concursos e gasto):",
+                f"  concursos com prêmio: plano {e}; acaso {sum(cp) / len(cp):.1f} em média, 90% entre {q(cp)[0]} e "
+                f"{q(cp)[1]}; o plano superou {sum(x < e for x in cp) / len(cp):.0%} das sequências",
+                f"  retorno: plano {ret:.0%}; acaso {sum(rt) / len(rt):.0%} em média, 90% entre {q(rt)[0]:.0%} e "
+                f"{q(rt)[1]:.0%}; o plano superou {sum(x < ret for x in rt) / len(rt):.0%} das sequências"]
+    if r.get("sem_preco"):
+        out += ["", f"Preço: {r['sem_preco']} dos {r['concursos']} concursos são anteriores à vigência registrada do "
+                    "preço atual; o preço da época não está no app, então foi usado o atual."]
     out += ["", "Um teste no passado mostra o que teria acontecido, não o que vai acontecer. Variações entre os "
                 "dois planos em poucos concursos são em grande parte sorte; o que se mantém no longo prazo é o "
                 "retorno médio de cada jogo (aba Retorno)."]
@@ -1078,10 +1201,11 @@ def _faixas_plano(plano):
     j = plano["jogo"]
     ev = valor_esperado(j)
     faixas = [(p, v) for _, p, v, _ in ev["linhas"]]
-    tv = [1, 2] if j == "maismilionaria" else []
-    n_simples = apostas_simples(j, list(range(plano["n"])), tv) * (1 if plano["tipo"] == "bolão" else plano["k"])
+    tv = [1, 2] if M[j].get("trevos") else []
+    n_simples = (math.prod(plano["tamanhos"]) if plano.get("tamanhos") else apostas_simples(
+        j, list(range(plano["n"])), tv)) * (1 if plano["tipo"] == "bolão" else plano["k"])
     fator = 1 / plano["cotas"] if plano["tipo"] == "bolão" else 1.0
-    if j == "duplasena":
+    if M[j].get("sorteios") == 2:
         n_simples *= 2
     return faixas, n_simples, fator, _sorteia_ganho
 
@@ -1181,14 +1305,20 @@ def qui_quadrado(obs, esp):
 
 def auditoria(jogo):
     """Testes clássicos de aleatoriedade nos sorteios reais, com correção de Holm para vários testes."""
-    from core import load_draws
     N, K = JOGOS[jogo][:2]
-    draws = [d for _, d in sorted(load_draws(jogo, 100000))]
+    rows = db().execute("SELECT concurso, dezenas, meta FROM draws WHERE jogo=? ORDER BY concurso", (jogo,)).fetchall()
+    draws = []
+    for _, d, meta in rows:   # Dupla Sena: os dois sorteios de cada concurso entram, em ordem
+        draws.append(json.loads(d))
+        d2 = json.loads(meta or "{}").get("dezenas2") if M[jogo].get("sorteios") == 2 else None
+        if d2:
+            draws.append(d2)
+    from core import datas_fora_de_ordem
     T = len(draws)
     if T < 100:
         raise ValueError(f"{jogo}: baixe os resultados primeiro (há {T} concursos).")
     testes = []
-    if jogo == "supersete":
+    if M[jogo].get("colunas"):
         for col in range(7):
             obs = [sum(d[col] == x for d in draws) for x in range(10)]
             testes.append((f"coluna {col + 1}: cada dígito sai igual", *qui_quadrado(obs, [T / 10] * 10)))
@@ -1222,7 +1352,8 @@ def auditoria(jogo):
     for r, i in enumerate(ordem):   # correção de Holm
         maior = max(maior, min(1.0, (m - r) * testes[i][2]))
         ajust[i] = maior
-    return {"jogo": jogo, "concursos": T, "testes": [(*t, a) for t, a in zip(testes, ajust)]}
+    return {"jogo": jogo, "concursos": len(rows), "sorteios": T, "testes": [(*t, a) for t, a in zip(testes, ajust)],
+            "datas_fora_de_ordem": datas_fora_de_ordem(jogo)}
 
 
 def texto_auditoria(r):
@@ -1240,6 +1371,11 @@ def texto_auditoria(r):
                  "volante ao longo dos anos; desvio estatístico não é o mesmo que previsão útil (veja o teste "
                  "no passado)."),
             "valor-p ajustado (Holm) corrige o fato de fazermos vários testes: abaixo de 0,05 indica desvio."]
+    if r.get("sorteios", r["concursos"]) != r["concursos"]:
+        out.append(f"Dupla Sena: os {r['sorteios']} sorteios ({r['concursos']} concursos x 2) entram nos testes.")
+    if r.get("datas_fora_de_ordem"):
+        out.append("Datas que recuam em relação ao concurso anterior (provável erro na fonte): "
+                   + ", ".join(f"{c} ({d})" for c, d in r["datas_fora_de_ordem"]))
     return "\n".join(out)
 
 
@@ -1273,7 +1409,7 @@ def previsao_acumulado(jogo):
     val = J2 * (1 - math.exp(-lam)) / lam
     if val > IR_ISENTO:
         val *= 1 - IR
-    ev2 = (resto + p_top * val) * (2 if jogo == "duplasena" else 1)
+    ev2 = (resto + p_top * val) * M[jogo].get("sorteios", 1)
     return {"jogo": jogo, "estimado": J, "p_acumula": p_acumula, "proximo": J2, "retorno_atual": base["retorno"],
             "retorno_se_acumular": ev2 / preco}
 
@@ -1312,7 +1448,9 @@ def sugestoes(jogo, qtd=5, n=None, rng=None):
     prêmio (média e pior cartão): espalhar decide a cobertura, a popularidade decide entre os empates."""
     rng = rng or random
     pesos = pesos_popularidade(jogo)
-    if not pesos or jogo == "supersete":
+    if M[jogo].get("colunas") and n and n > 7:
+        return cartoes_supersete(qtd, formatos_supersete()[n], rng)
+    if not pesos or M[jogo].get("colunas"):
         return cartoes_espalhados(jogo, qtd, n, pesos, rng)
     m = _modelo(jogo)
     ant = m.get("anterior", [])
@@ -1389,10 +1527,9 @@ def _menos_divididos(jogo, cs, m, rng, trocas=TROCAS_SUGESTAO):
 TESTADO_NAO_FUNCIONA = (
     "Testado com os resultados reais e SEM efeito (igual ao acaso): números quentes, frios/atrasados, repetir o "
     "último resultado, rede neural de previsão, 'aprender com erros e acertos' e treino por tentativa e erro "
-    "(mais de 5.000 concursos, testes cegos com impressão digital). Redes grandes com treino pesado (1.000 "
-    "concursos de teste por jogo) também empataram com o acaso, embora achem um padrão plantado em sorteios "
-    "simulados: o problema não é a rede, é que não há padrão. A ordem em que as bolas saem (Mega-Sena, 3.079 "
-    "concursos) também é aleatória. Nenhum método prevê os números sorteados.")
+    "(mais de 5.000 concursos, testes cegos com impressão digital). Testes exploratórios com redes grandes e com "
+    "a ordem das bolas também não mostraram vantagem, mas reaproveitaram o mesmo período de teste: não são "
+    "confirmatórios (ver experimentos.py). Nenhum método prevê os números sorteados.")
 TESTADO_FUNCIONA = (
     "Testado e COM efeito: escolher o jogo pela chance de prêmio por real; cartões espalhados (mais concursos "
     "com prêmio pelo mesmo gasto); time/mês/trevos sem repetir entre cartões; números pouco jogados pelo público "
@@ -1418,9 +1555,10 @@ def fatos_app(jogo):
         pass
     m = _modelo(jogo)
     if m:
-        linhas.append(f"- Modelo de popularidade: acerta {m['r2_teste']:.0%} ao prever, em concursos não vistos, "
-                      "se a combinação sorteada era muito ou pouco jogada (é a nota do modelo, NÃO a popularidade de "
-                      f"um cartão; {'usado' if m.get('confiavel') else 'não confiável, não usado'}).")
+        linhas.append(f"- Modelo de popularidade: explica cerca de {m['r2_teste']:.0%} da variação do número de "
+                      "ganhadores em concursos de teste (correlação²; é a nota do modelo, NÃO a popularidade de um "
+                      f"cartão; {'usado' if m.get('confiavel') else 'não confiável, não usado'}"
+                      + ("" if m.get("teste_independente", True) else "; período de teste já consultado") + ").")
     melhores = sorted(JOGOS, key=lambda j: -prob_premio(j) / JOGOS[j][4])[:3]
     precos = ", ".join(f"{j} R$ {JOGOS[j][4]:.2f}".replace(".", ",") for j in JOGOS)
     linhas.append(f"- Preço da aposta simples: {precos}. Todos os cartões têm a MESMA chance de acerto; "

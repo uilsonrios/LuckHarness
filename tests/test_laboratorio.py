@@ -27,7 +27,7 @@ def test_estrategias_nunca_enxergam_o_futuro(quina, monkeypatch):
         return original(jogo, passado, ctx)
     monkeypatch.setattr(lab, "_apostas", espia)
     lab.teste_cego(quina, 50, ["ao acaso", "quentes", "frios"])
-    assert vistos == [450]                    # apostou uma vez só, com dados até o 450
+    assert vistos == [450] * 3                # uma aposta por semente (3), sempre com dados até o 450
     vistos.clear()
     lab.teste_continuo(quina, 30, ["quentes", "frios"])
     assert vistos == list(range(470, 500))    # cada concurso t só viu até t-1
@@ -84,3 +84,21 @@ def test_cartoes_iguais_no_mesmo_concurso_nao_viram_vantagem_falsa():
     media = sum(c[0] for c in reg["copias"]) / 200
     # desvio entre concursos ~1,22 (o de um cartão), não 1,22/sqrt(10)
     assert abs(li["z"]) == pytest.approx(abs(media - 9) / (1.22 / 200 ** 0.5), rel=0.15)
+
+
+def test_experimentos_ficam_registrados_e_corrigidos_pela_familia(quina):
+    with core.db() as c:
+        c.execute("DELETE FROM experimentos WHERE jogo='quina'")
+    r1 = lab.teste_cego(quina, 50, ["ao acaso", "quentes", "frios"])
+    r2 = lab.teste_cego(quina, 50, ["ao acaso", "quentes", "frios"], seed=7)
+    assert (r1["hipoteses"], r2["hipoteses"]) == (3, 6) and r2["execucoes"] == 2
+    assert all(li["p_familia"] >= li["p_ajust"] - 1e-12 for li in r2["linhas"])   # conta as hipóteses de antes
+    reg = core.db().execute("SELECT params, versao, hash_dados FROM experimentos WHERE jogo='quina'").fetchall()
+    assert len(reg) == 2 and json.loads(reg[1][0])["seed"] == 7 and reg[1][1] == core.__version__ and reg[1][2]
+    txt = lab.texto_resultado(r2)
+    assert "IC 95%" in txt and "sem evidência de diferença" in txt and "6 hipóteses" in txt
+
+
+def test_neuronio_relata_ic_e_poder(quina):
+    txt, _ = core.learn(quina, core.load_draws(quina, 1000), 5, teste=0)
+    assert "IC 95%" in txt and "só detecta diferenças" in txt and "NÃO supera" not in txt

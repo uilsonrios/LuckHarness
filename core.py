@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.14.2"
+__version__ = "1.15.0"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -21,26 +21,65 @@ CAIXA = ("https://servicebus2.caixa.gov.br/portaldeloterias/api/{}/{}",
          "https://servicebus3.caixa.gov.br/portaldeloterias/api/{}/{}")
 MIRROR = "https://loteriascaixa-api.herokuapp.com/api/{}/{}"
 
-# jogo: (universo N, dezenas sorteadas K, dezenas apostadas mínimas, faixas premiadas, preço aposta mínima)
-# preços oficiais da Caixa (reajuste de 09/07/2025: Mega, Lotofácil, Quina, Dupla Sena e Super Sete)
-# supersete: N=10 dígitos por coluna, K=7 colunas
-JOGOS = {
-    "megasena": (60, 6, 6, [4, 5, 6], 6.00),
-    "lotofacil": (25, 15, 15, [11, 12, 13, 14, 15], 3.50),
-    "quina": (80, 5, 5, [2, 3, 4, 5], 3.00),
-    "lotomania": (100, 20, 50, [0, 15, 16, 17, 18, 19, 20], 3.00),
-    "duplasena": (50, 6, 6, [3, 4, 5, 6], 3.00),
-    "timemania": (80, 7, 10, [3, 4, 5, 6, 7], 3.50),
-    "diadesorte": (31, 7, 7, [4, 5, 6, 7], 2.50),
-    "maismilionaria": (50, 6, 6, [2, 3, 4, 5, 6], 6.00),
-    "supersete": (10, 7, 7, [3, 4, 5, 6, 7], 3.00),
+# Ficha de cada modalidade: a ÚNICA fonte das regras (conferidas nas páginas oficiais de loterias.caixa.gov.br em
+# 31/10/2026). As funções perguntam a característica ("colunas", "trevos", "sorteios"...), não o nome do jogo.
+#   N: universo | sorteados | escolha: (mínimo, máximo) de números marcados | faixas premiadas | preço da aposta mínima
+#   colunas: Super Sete (7 colunas de 0 a 9; N = dígitos por coluna) | trevos: (universo, sorteados, mín, máx)
+#   sorteios: 2 na Dupla Sena | extra: (chave no resultado, faixa, chance) | zero_e_100: '00' do volante = 100
+#   espelho: aposta-espelho | volante: colunas do bilhete (padrões de escolha) | dias: dias de sorteio (0 = segunda)
+MODALIDADES = {
+    "megasena": dict(nome="Mega-Sena", N=60, sorteados=6, escolha=(6, 20), faixas=[4, 5, 6], preco=6.00,
+                     volante=10, dias=(1, 3, 5)),
+    "lotofacil": dict(nome="Lotofácil", N=25, sorteados=15, escolha=(15, 20), faixas=[11, 12, 13, 14, 15], preco=3.50,
+                      volante=5, dias=(0, 1, 2, 3, 4, 5)),
+    "quina": dict(nome="Quina", N=80, sorteados=5, escolha=(5, 15), faixas=[2, 3, 4, 5], preco=3.00, volante=10,
+                  dias=(0, 1, 2, 3, 4, 5)),
+    "lotomania": dict(nome="Lotomania", N=100, sorteados=20, escolha=(50, 50), faixas=[0, 15, 16, 17, 18, 19, 20],
+                      preco=3.00, volante=10, dias=(0, 2, 4), zero_e_100=True, espelho=True),
+    "duplasena": dict(nome="Dupla Sena", N=50, sorteados=6, escolha=(6, 15), faixas=[3, 4, 5, 6], preco=3.00,
+                      volante=10, dias=(0, 2, 4), sorteios=2),
+    "timemania": dict(nome="Timemania", N=80, sorteados=7, escolha=(10, 10), faixas=[3, 4, 5, 6, 7], preco=3.50,
+                      volante=10, dias=(1, 3, 5), extra=("time", "Time do Coração", 1 / 80)),
+    "diadesorte": dict(nome="Dia de Sorte", N=31, sorteados=7, escolha=(7, 15), faixas=[4, 5, 6, 7], preco=2.50,
+                       volante=7, dias=(1, 3, 5), extra=("mes", "Mês da Sorte", 1 / 12)),
+    "maismilionaria": dict(nome="+Milionária", N=50, sorteados=6, escolha=(6, 12), faixas=[2, 3, 4, 5, 6],
+                           preco=6.00, volante=10, dias=(2, 5), trevos=(6, 2, 2, 6)),
+    "supersete": dict(nome="Super Sete", N=10, sorteados=7, escolha=(7, 21), faixas=[3, 4, 5, 6, 7], preco=3.00,
+                      dias=(0, 2, 4), colunas=7),
 }
+M = MODALIDADES
+# visões derivadas, mantidas para o resto do código
+JOGOS = {j: (m["N"], m["sorteados"], m["escolha"][0], m["faixas"], m["preco"]) for j, m in M.items()}
+# Preço com vigência: (primeiro concurso, preço, fonte). Reajuste de 2025 pelo cronograma oficial da CAIXA
+# (caixanoticias.caixa.gov.br, 02/07/2025, imagem LOTERIAS_02072025.jpg). O preço anterior a cada vigência não foi
+# encontrado em fonte oficial: as análises usam o atual nesses concursos e avisam.
+_REAJUSTE_2025 = "CAIXA Notícias 02/07/2025 (cronograma do reajuste)"
+PRECOS = {"megasena": [(2887, 6.00, _REAJUSTE_2025)], "lotofacil": [(3439, 3.50, _REAJUSTE_2025)],
+          "quina": [(6770, 3.00, _REAJUSTE_2025)], "duplasena": [(2832, 3.00, _REAJUSTE_2025)],
+          "supersete": [(727, 3.00, _REAJUSTE_2025)]}
+PRECOS.update({j: [(None, JOGOS[j][4], "loterias.caixa.gov.br, consulta 31/10/2026 (início da vigência não registrado)")]
+               for j in ("lotomania", "timemania", "diadesorte", "maismilionaria")})
+
+
+def preco_vigente(jogo, concurso):
+    """(preço do concurso, True se esse preço é conhecido de fonte oficial)."""
+    for inicio, preco, _ in sorted(PRECOS[jogo], key=lambda v: v[0] or 0, reverse=True):
+        if inicio and concurso >= inicio:
+            return preco, True
+    return JOGOS[jogo][4], False
+
+
+def universo(jogo):
+    """(menor, maior) número válido em sorteios e apostas. Lotomania: o '00' do volante é guardado como 100."""
+    return (0, 9) if M[jogo].get("colunas") else (1, JOGOS[jogo][0])
+
+
 MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro",
          "Novembro", "Dezembro"]
 # prêmio extra escolhido fora das dezenas: (chave no meta, descrição da faixa, chance de acertar)
-EXTRA = {"timemania": ("time", "Time do Coração", 1 / 80), "diadesorte": ("mes", "Mês da Sorte", 1 / 12)}
-MAX_DEZ = {"megasena": 20, "lotofacil": 20, "quina": 15, "lotomania": 50, "duplasena": 15,
-           "timemania": 10, "diadesorte": 15, "maismilionaria": 12, "supersete": 7}
+EXTRA = {j: m["extra"] for j, m in M.items() if m.get("extra")}
+# dezenas por cartão nos jogos de dezenas (Super Sete: 7 colunas; os números extras por coluna ficam em 'escolha')
+MAX_DEZ = {j: (m["colunas"] if m.get("colunas") else m["escolha"][1]) for j, m in M.items()}
 # Bolão CAIXA com uma aposta de n dezenas: n -> (valor mínimo da cota, máximo de cotas); mínimo de 2 cotas.
 # Tabelas das páginas oficiais em loterias.caixa.gov.br (consultadas em 30/10/2026). Com a aposta mínima o bolão
 # precisa de várias apostas (não modelado). +Milionária: apostas com 2 trevos. Cotas prontas vendidas na lotérica
@@ -87,6 +126,23 @@ class _Conn(sqlite3.Connection):
             self.close()
 
 
+def _migra(c):
+    """Lotomania gravada com 0 no lugar do 100 e times da Timemania com nomes sujos (versões antigas)."""
+    for conc, dz in c.execute("SELECT concurso, dezenas FROM draws WHERE jogo='lotomania'").fetchall():
+        d = json.loads(dz)
+        if 0 in d:
+            c.execute("UPDATE draws SET dezenas=? WHERE jogo='lotomania' AND concurso=?",
+                      (json.dumps([100 if x == 0 else x for x in d]), conc))
+    for conc, meta in c.execute("SELECT concurso, meta FROM draws WHERE jogo='timemania' AND meta IS NOT NULL"
+                                ).fetchall():
+        m = json.loads(meta)
+        t = norm_time(m.get("time"))
+        if t != m.get("time"):
+            m["time"] = t
+            c.execute("UPDATE draws SET meta=? WHERE jogo='timemania' AND concurso=?", (json.dumps(m), conc))
+    c.commit()   # sem 'with c': nesta classe o 'with' fecha a conexão
+
+
 def db():
     global _schema_ok
     c = sqlite3.connect(DB, timeout=10, factory=_Conn)
@@ -100,6 +156,8 @@ def db():
                                         desde INT, criado TEXT);
         CREATE TABLE IF NOT EXISTS chats(id INTEGER PRIMARY KEY, user TEXT, role TEXT, content TEXT);
         CREATE TABLE IF NOT EXISTS correcoes(jogo TEXT, concurso INT, antes TEXT, depois TEXT, quando TEXT);
+        CREATE TABLE IF NOT EXISTS experimentos(id INTEGER PRIMARY KEY, quando TEXT, jogo TEXT, modo TEXT,
+                                                params TEXT, versao TEXT, hash_dados TEXT, resultado TEXT);
         CREATE TABLE IF NOT EXISTS banca(id INTEGER PRIMARY KEY, user TEXT, data TEXT, tipo TEXT, valor REAL,
                                          descr TEXT);
         CREATE INDEX IF NOT EXISTS ix_bets_user ON bets(user);
@@ -110,6 +168,7 @@ def db():
             c.execute("ALTER TABLE draws ADD COLUMN meta TEXT")
         except sqlite3.OperationalError:
             pass
+        _migra(c)
         _schema_ok = True
     return c
 
@@ -184,7 +243,7 @@ def _get(url, timeout=15):
 
 
 def _from_mirror(d):
-    return {"concurso": d["concurso"], "dezenas": d["dezenas"], "data": d.get("data"),
+    return {"concurso": d["concurso"], "dezenas": d["dezenas"], "data": d.get("data"), "fonte": "espelho",
             "trevos": d.get("trevos") or [], "time": d.get("timeCoracao"), "mes": d.get("mesSorte"),
             "estimado": d.get("valorEstimadoProximoConcurso") or 0,
             "arrecadado": d.get("valorArrecadado") or 0,
@@ -193,7 +252,7 @@ def _from_mirror(d):
 
 
 def _from_caixa(d):
-    return {"concurso": d["numero"], "dezenas": d["listaDezenas"], "data": d.get("dataApuracao"),
+    return {"concurso": d["numero"], "dezenas": d["listaDezenas"], "data": d.get("dataApuracao"), "fonte": "caixa",
             "trevos": d.get("trevosSorteados") or [], "dezenas2": d.get("listaDezenasSegundoSorteio") or [],
             "time": d.get("nomeTimeCoracaoMesSorte"), "mes": d.get("nomeTimeCoracaoMesSorte"),
             "estimado": d.get("valorEstimadoProximoConcurso") or 0,
@@ -234,13 +293,15 @@ def _row(jogo, d):
     # dupla sena traz os dois sorteios juntos; usa só o primeiro. Super Sete fica na ordem das colunas.
     K = JOGOS[jogo][1]
     dez = [int(x) for x in d["dezenas"]][:K]
+    if M[jogo].get("zero_e_100"):
+        dez = [100 if x == 0 else x for x in dez]   # o '00' do volante: uma só representação em todo o app
     meta = {"data": d["data"], "trevos": [int(x) for x in d["trevos"]], "premios": d["premios"],
             "estimado": d.get("estimado", 0), "arrecadado": d.get("arrecadado", 0),
-            "ganhadores": d.get("ganhadores") or []}
+            "ganhadores": d.get("ganhadores") or [], "fonte": d.get("fonte")}
     if jogo in EXTRA:
         chave = EXTRA[jogo][0]
         meta[chave] = _extra(jogo, d.get(chave))
-    if jogo == "duplasena":
+    if M[jogo].get("sorteios") == 2:
         # espelho manda as 12 dezenas juntas; a Caixa manda o 2º sorteio separado
         meta["dezenas2"] = [int(x) for x in d.get("dezenas2") or d["dezenas"][K:2 * K]]
     return jogo, d["concurso"], json.dumps(dez), json.dumps(meta)
@@ -290,7 +351,7 @@ def sync_draws(jogo, n=50, log=print):
     if len(validos) < len(rows):
         log(f"{len(rows) - len(validos)} resultado(s) inválido(s) recusado(s) (detalhes no log).")
     rows = list(validos.values())
-    mesma = (lambda d: d) if jogo == "supersete" else sorted   # Super Sete: a ordem das colunas importa
+    mesma = (lambda d: d) if M[jogo].get("colunas") else sorted   # Super Sete: a ordem das colunas importa
     with db() as c:   # uma transação: ou grava tudo, ou nada
         antigos = {k: json.loads(d) for k, d in c.execute("SELECT concurso, dezenas FROM draws WHERE jogo=?",
                                                           (jogo,))}
@@ -312,14 +373,14 @@ def sync_draws(jogo, n=50, log=print):
 def valida_resultado(jogo, concurso, dezenas, meta):
     """Motivo para recusar um resultado antes de gravar, ou None se estiver certo."""
     N, K = JOGOS[jogo][:2]
-    lo, hi = (0, 9) if jogo == "supersete" else (0, 99) if jogo == "lotomania" else (1, N)
+    lo, hi = universo(jogo)
     if not isinstance(concurso, int) or concurso < 1:
         return f"{jogo}: número de concurso inválido ({concurso!r})"
-    listas = [("dezenas", dezenas)] + ([("2º sorteio", meta.get("dezenas2") or [])] if jogo == "duplasena" else [])
+    listas = [("dezenas", dezenas)] + ([("2º sorteio", meta.get("dezenas2") or [])] if M[jogo].get("sorteios") == 2 else [])
     for nome, d in listas:
-        if len(d) != K or any(not lo <= x <= hi for x in d) or (jogo != "supersete" and len(set(d)) != K):
+        if len(d) != K or any(not lo <= x <= hi for x in d) or (not M[jogo].get("colunas") and len(set(d)) != K):
             return f"{jogo} {concurso}: {nome} inválidas {d}"
-    if jogo == "maismilionaria":
+    if M[jogo].get("trevos"):
         t = meta.get("trevos") or []
         if len(t) != 2 or len(set(t)) != 2 or any(not 1 <= x <= 6 for x in t):
             return f"{jogo} {concurso}: trevos inválidos {t}"
@@ -330,6 +391,52 @@ def load_draws(jogo, n):
     rows = db().execute("SELECT concurso, dezenas FROM draws WHERE jogo=? ORDER BY concurso DESC LIMIT ?",
                         (jogo, n)).fetchall()
     return [(r[0], json.loads(r[1])) for r in rows]
+
+
+def versao_regra(jogo):
+    """Regras e preço usados, com a fonte (para o painel de cada experimento)."""
+    m = M[jogo]
+    ini, preco, fonte = sorted(PRECOS[jogo], key=lambda v: v[0] or 0)[-1]
+    esc = f"{m['escolha'][0]}" + (f" a {m['escolha'][1]}" if m["escolha"][1] != m["escolha"][0] else "")
+    return (f"Regras ({m['nome']}): {esc} números de {m['N']}{' por coluna' if m.get('colunas') else ''}, "
+            f"{m['sorteados']} sorteados{' (2 sorteios)' if m.get('sorteios') == 2 else ''}, faixas "
+            f"{', '.join(map(str, m['faixas']))}; preço R$ {preco:.2f}".replace(".", ",")
+            + (f" desde o concurso {ini}" if ini else "") + f" ({fonte}). Fichas conferidas em 31/10/2026.")
+
+
+def load_sorteios(jogo, n):
+    """Como load_draws, mas a Dupla Sena traz os dois sorteios de cada concurso (o 2º logo depois do 1º)."""
+    if M[jogo].get("sorteios") != 2:
+        return load_draws(jogo, n)
+    out = []
+    for conc, dz, meta in db().execute("SELECT concurso, dezenas, meta FROM draws WHERE jogo=? ORDER BY concurso "
+                                       "DESC LIMIT ?", (jogo, n)):
+        d2 = json.loads(meta or "{}").get("dezenas2")
+        out += ([(conc, d2)] if d2 else []) + [(conc, json.loads(dz))]
+    return out
+
+
+def datas_fora_de_ordem(jogo):
+    """Concursos cuja data é anterior à do concurso anterior: erro na fonte (só sinaliza; não corrige sem fonte
+    oficial)."""
+    out, ant = [], None
+    for conc, meta in db().execute("SELECT concurso, meta FROM draws WHERE jogo=? AND meta IS NOT NULL "
+                                   "ORDER BY concurso", (jogo,)):
+        try:
+            d, m, a = map(int, json.loads(meta)["data"].split("/"))
+            x = date(a, m, d)
+        except (KeyError, ValueError, AttributeError):
+            continue
+        if ant and x < ant:
+            out.append((conc, x.strftime("%d/%m/%Y")))
+        ant = x
+    return out
+
+
+def hash_dados(jogo):
+    """Impressão digital dos resultados usados num experimento (reprodutibilidade)."""
+    rows = db().execute("SELECT concurso, dezenas FROM draws WHERE jogo=? ORDER BY concurso", (jogo,)).fetchall()
+    return hashlib.sha256(json.dumps(rows).encode()).hexdigest()[:16]
 
 
 def load_trevos(jogo, n):
@@ -360,7 +467,8 @@ def analyze(jogo, draws, n_bet):
     pares = [sum(1 for x in d if x % 2 == 0) for _, d in draws]
     custo = preco * math.comb(n_bet, JOGOS[jogo][2])
 
-    out = [f"=== {jogo.upper()} | {total} concursos | aposta de {n_bet} dezenas ===", ""]
+    unidade = "sorteios (2 por concurso)" if M[jogo].get("sorteios") == 2 else "concursos"
+    out = [f"=== {jogo.upper()} | {total} {unidade} | aposta de {n_bet} dezenas ===", ""]
     out.append("Probabilidades (hipergeométrica):")
     for k in sorted(faixas):
         p = hypergeom(N, K, n_bet, k)
@@ -381,7 +489,7 @@ def analyze(jogo, draws, n_bet):
         sd = math.sqrt(sum((s - m) ** 2 for s in somas) / len(somas))
         out.append(f"Soma das dezenas: média {m:.1f}, desvio {sd:.1f}")
         out.append(f"Pares por sorteio: média {sum(pares)/len(pares):.2f} (teórico {K/2:.2f})")
-    if jogo == "maismilionaria":
+    if M[jogo].get("trevos"):
         tf = Counter(x for t in load_trevos(jogo, total) for x in t)
         out.append("Trevos (1 a 6, saem 2): " + ", ".join(f"{t}({tf.get(t, 0)})" for t in range(1, 7)))
         out.append("  P(acertar os 2 trevos com 2 marcados) = 1/15")
@@ -471,7 +579,7 @@ def learn(jogo, draws, n_bet, teste=100, epocas=3, lr=0.05):
         for x in d:
             row[x] += 1
         cum.append(row)
-    teste = min(teste, T // 3)
+    teste = min(teste, T // 3) if teste else min(1000, T // 3)
     w = [0.0] * (len(JANELAS) + 2)
 
     def rodada(t, atr, treinar):
@@ -499,18 +607,29 @@ def learn(jogo, draws, n_bet, teste=100, epocas=3, lr=0.05):
                     acertos.append(len(ds[t].intersection(top)))
             for i in range(1, N + 1):
                 atr[i] = 0 if i in ds[t] else atr[i] + 1
+    # o palpite final aprende também com os concursos do teste (já avaliados), em ordem
+    atr = {i: 0 for i in range(1, N + 1)}
+    for t in range(T):
+        if t >= max(20, T - teste):
+            rodada(t, atr, True)
+        for i in range(1, N + 1):
+            atr[i] = 0 if i in ds[t] else atr[i] + 1
     prox = rodada(T, atr, False)
     esperado = n_bet * K / N
     media = sum(acertos) / len(acertos)
     var = n_bet * (K / N) * (1 - K / N) * (N - n_bet) / (N - 1)
-    zs = (media - esperado) / math.sqrt(var / len(acertos)) if var else 0
+    se = math.sqrt(var / len(acertos)) if var else 0
+    zs = (media - esperado) / se if se else 0
     nomes = ["viés"] + [f"freq{x}" for x in JANELAS] + ["atraso"]
     out = ["", f"Modelo de aprendizado (neurônio logístico, {epocas} épocas, teste em {len(acertos)} concursos):",
            "  pesos: " + ", ".join(f"{n}={v:+.3f}" for n, v in zip(nomes, w)),
            f"  acertos médios do top-{n_bet}: {media:.3f}  |  acaso: {esperado:.3f}  |  z = {zs:+.2f}",
            "  distribuição: " + ", ".join(f"{k}:{c}" for k, c in sorted(Counter(acertos).items())),
-           "  -> " + ("|z| < 2: o modelo NÃO supera o acaso (o esperado em sorteio aleatório)." if abs(zs) < 2 else
-                      "|z| >= 2: diferença aparente; pode ser sorte, confirme com mais concursos.")]
+           f"  diferença: {media - esperado:+.3f} acerto (IC 95%: {media - esperado - 1.96 * se:+.3f} a "
+           f"{media - esperado + 1.96 * se:+.3f}); com {len(acertos)} concursos o teste só detecta diferenças a partir "
+           f"de {2.8 * se:.3f} acerto ({2.8 * se / esperado:.0%})",
+           "  -> " + ("|z| < 2: sem evidência de diferença para o acaso (isso não prova que sejam iguais)." if abs(zs) < 2
+                      else "|z| >= 2: diferença aparente; pode ser sorte, confirme em concursos futuros.")]
     return "\n".join(out), sorted(sorted(prox, key=prox.get, reverse=True)[:n_bet])
 
 
@@ -526,7 +645,7 @@ IR, IR_ISENTO = 0.30, 2259.20   # imposto de renda sobre prêmios acima do limit
 def prob_faixa(jogo, h, n=None):
     """P(exatamente h acertos) com n dezenas marcadas (padrão: aposta simples)."""
     N, K, mn = JOGOS[jogo][:3]
-    if jogo == "supersete":
+    if M[jogo].get("colunas"):
         return math.comb(7, h) * 0.1 ** h * 0.9 ** (7 - h)
     return hypergeom(N, K, n or mn, h)
 
@@ -552,7 +671,7 @@ def valor_esperado(jogo, liquido=True):
     med, last = premios_medios(jogo)
     apostas = (last.get("arrecadado") or 0) / preco
     top = max(faixas)
-    trevos = {2: 1 / 15, 1: 8 / 15, 0: 6 / 15} if jogo == "maismilionaria" else {0: 1.0}
+    trevos = {2: 1 / 15, 1: 8 / 15, 0: 6 / 15} if M[jogo].get("trevos") else {0: 1.0}
     linhas, ev = [], 0.0
     for h in sorted(faixas, reverse=True):
         for th, pt in trevos.items():
@@ -562,7 +681,7 @@ def valor_esperado(jogo, liquido=True):
             if principal and last.get("estimado"):
                 lam = apostas * p
                 val = last["estimado"] * ((1 - math.exp(-lam)) / lam if lam > 1e-9 else 1)
-                nome = f"{h} acertos + 2 trevos" if jogo == "maismilionaria" else f"{h} acertos"
+                nome = f"{h} acertos + 2 trevos" if M[jogo].get("trevos") else f"{h} acertos"
                 desc = nome + " (estimado, já dividido)"
             elif m:
                 desc, val = m
@@ -581,7 +700,7 @@ def valor_esperado(jogo, liquido=True):
         if val:
             ev += p * val
             linhas.append((desc, p, val, p * val))
-    if jogo == "duplasena":
+    if M[jogo].get("sorteios") == 2:
         ev *= 2   # dois sorteios por concurso
     return {"jogo": jogo, "ev": ev, "preco": preco, "retorno": ev / preco, "linhas": linhas,
             "estimado": last.get("estimado") or 0, "apostas": apostas}
@@ -609,7 +728,7 @@ def texto_ev(r):
 def popularidade(jogo, nums):
     """Estima o quanto a aposta parece com as que muita gente faz (datas, sequências, padrões).
     Não muda a chance de ganhar; aposta popular divide o prêmio com mais gente."""
-    if jogo == "supersete":
+    if M[jogo].get("colunas"):
         return 0, []
     N = JOGOS[jogo][0]
     s = sorted(nums)
@@ -669,7 +788,7 @@ def avaliar_aposta(jogo, nums, trevos, r=None, fator=None):
 def bolao(jogo, n, cotas, r=None):
     r = r or valor_esperado(jogo)
     N, K, mn, faixas, preco = JOGOS[jogo]
-    mult = 1 if jogo == "supersete" else math.comb(n, mn)
+    mult = 1 if M[jogo].get("colunas") else math.comb(n, mn)
     total = preco * mult
     menor = min(f for f in faixas if f > 0)
     p_algo = sum(prob_faixa(jogo, h, n) for h in faixas if h >= menor)
@@ -708,7 +827,7 @@ def simular(jogo, semanal, anos, n_sim=2000):
     extra = EXTRA[jogo][1] if jogo in EXTRA else None
     faixas = [(p, val) for desc, p, val, _ in r["linhas"] if desc != extra]
     p_ex, v_ex = next(((p, val) for desc, p, val, _ in r["linhas"] if desc == extra), (0.0, 0.0))
-    sorteios = T * (2 if jogo == "duplasena" else 1)
+    sorteios = T * M[jogo].get("sorteios", 1)
     res = sorted(_sorteia_ganho(faixas, sorteios) + (random.binomialvariate(T, p_ex) * v_ex if p_ex else 0)
                  - gasto for _ in range(n_sim))
     pct = lambda q: res[min(len(res) - 1, int(q * len(res)))]
@@ -737,8 +856,8 @@ def texto_sim(m, semanal, anos):
 
 
 def historico_retorno(jogo, n=200):
-    """Retorno de cada concurso passado: prêmio principal estimado antes do sorteio + vendas reais do concurso.
-    As faixas menores usam a mediana recente (variam pouco)."""
+    """Retorno de cada concurso passado com o que se sabia ANTES do sorteio: prêmio anunciado e vendas do concurso
+    anterior (as do próprio concurso só saem depois). As faixas menores usam a mediana recente (variam pouco)."""
     base = valor_esperado(jogo)
     top = [(p) for d, p, v, c in base["linhas"] if "estimado" in d]
     if not top:
@@ -751,14 +870,14 @@ def historico_retorno(jogo, n=200):
     out = []
     for (_, m0), (conc, m1) in zip(rows, rows[1:]):
         m0, m1 = json.loads(m0), json.loads(m1)
-        J, vendas = m0.get("estimado") or 0, m1.get("arrecadado") or 0
+        J, vendas = m0.get("estimado") or 0, m0.get("arrecadado") or 0
         if not J or not vendas:
             continue
         lam = vendas / preco * p_top
         val = J * (1 - math.exp(-lam)) / lam
         if val > IR_ISENTO:
             val *= 1 - IR
-        ev = (resto + p_top * val) * (2 if jogo == "duplasena" else 1)
+        ev = (resto + p_top * val) * M[jogo].get("sorteios", 1)
         out.append((conc, J, ev / preco))
     return out
 
@@ -1036,22 +1155,30 @@ def parse_bet(jogo, txt):
     main, _, tr = txt.partition("+")
     nums = [int(x) for x in re.findall(r"\d+", main)]
     N, K, mn = JOGOS[jogo][:3]
-    if jogo == "supersete":
-        if len(nums) != 7 or any(not 0 <= x <= 9 for x in nums):
-            raise ValueError("Super Sete: informe 7 números de 0 a 9, um por coluna, na ordem.")
-        return nums, []
+    if M[jogo].get("colunas"):
+        cols = [sorted({int(c) for c in re.findall(r"\d", tok)}) for tok in main.split()]
+        total = sum(map(len, cols))
+        por_col = (1, 1) if total == 7 else (1, 2) if total <= 14 else (2, 3)
+        if len(cols) != 7 or not 7 <= total <= 21 or any(not por_col[0] <= len(c) <= por_col[1] for c in cols):
+            raise ValueError("Super Sete: 7 colunas separadas por espaço, de 0 a 9; mais números numa coluna com "
+                             "vírgula (ex.: 1,5 3 4 0 9 2 7). Total de 7 a 21: com 8 a 14 números, 1 ou 2 por "
+                             "coluna; com 15 a 21, 2 ou 3 por coluna.")
+        return [c[0] if len(c) == 1 else c for c in cols], []
+    if M[jogo].get("zero_e_100"):
+        nums = [100 if x == 0 else x for x in nums]   # 00 no volante
     nums = sorted(set(nums))
-    if any(not 1 <= x <= N for x in nums):
-        raise ValueError(f"{jogo}: as dezenas vão de 1 a {N}.")
+    lo, hi = universo(jogo)
+    if any(not lo <= x <= hi for x in nums):
+        raise ValueError(f"{jogo}: as dezenas vão de " + ("00 a 99." if M[jogo].get("zero_e_100") else f"{lo} a {hi}."))
     if not mn <= len(nums) <= MAX_DEZ[jogo]:
         faixa = str(mn) if mn == MAX_DEZ[jogo] else f"{mn} a {MAX_DEZ[jogo]}"
         raise ValueError(f"{jogo}: marque {faixa} dezenas (você marcou {len(nums)}).")
     trevos = []
-    if tr.strip() and jogo not in EXTRA and jogo != "maismilionaria":
+    if tr.strip() and jogo not in EXTRA and not M[jogo].get("trevos"):
         raise ValueError(f"{jogo}: este jogo não tem nada depois de '+' (sem trevo, time ou mês).")
     if jogo in EXTRA and tr.strip():
         trevos = [_extra(jogo, tr, validar=True)]
-    if jogo == "maismilionaria":
+    if M[jogo].get("trevos"):
         trevos = sorted({int(x) for x in re.findall(r"\d+", tr)})
         if not 2 <= len(trevos) <= 6 or any(not 1 <= x <= 6 for x in trevos):
             raise ValueError("+Milionária: informe de 2 a 6 trevos (1 a 6) depois de '+', ex.: 01 02 03 04 05 06 + 1 4")
@@ -1063,9 +1190,69 @@ def _norm(t):
     return re.sub(r"\s+", " ", t).strip().upper()
 
 
+def norm_time(t):
+    """Uma grafia por time, no formato da Caixa: 'ABC/RN', 'A B C/RN' e 'AMERICA' com bytes nulos viram 'ABC /RN' e
+    'AMERICA /RJ'."""
+    if not t:
+        return t
+    t = _norm(str(t).replace("\x00", " "))
+    nome, sep, uf = t.rpartition("/")
+    if not sep:
+        return t
+    nome = nome.strip()
+    if re.fullmatch(r"(\w )+\w", nome):   # 'A B C' -> 'ABC'
+        nome = nome.replace(" ", "")
+    return f"{nome} /{uf.strip()}"
+
+
+# Lista oficial dos 80 times do biênio (Portaria do Ministério do Esporte; 2026-2028: Portaria MESP nº 32/2026).
+# Coloque em timemania_times.json: {"fonte": "...", "vigencia": "2026-2028", "times": ["ABC/RN", ...]}.
+TIMES_OFICIAIS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "timemania_times.json")
+
+
+def times_validos():
+    """(times que dá para marcar no volante, True se a lista é a oficial). Sem o arquivo oficial, usa os times já
+    sorteados desde o início do biênio: todos saíram do volante atual, então são válidos (a lista fica incompleta,
+    mas nunca sugere time de biênio antigo). Com menos de 30 times no biênio, completa com os últimos 200 concursos."""
+    try:
+        with open(TIMES_OFICIAIS, encoding="utf8") as f:
+            ts = [norm_time(t) for t in json.load(f)["times"]]
+        if ts:
+            return sorted(set(ts)), True
+    except (OSError, ValueError, KeyError):
+        pass
+    rows = [json.loads(m) for (m,) in db().execute("SELECT meta FROM draws WHERE jogo='timemania' AND meta IS NOT "
+                                                   "NULL ORDER BY concurso DESC LIMIT 200")]
+
+    def data(m):
+        try:
+            d, mm, a = map(int, m["data"].split("/"))
+            return date(a, mm, d)
+        except (KeyError, ValueError, AttributeError):
+            return date.min
+    bienio = {norm_time(m.get("time")) for m in rows if m.get("time") and data(m) >= BIENIO_TIMEMANIA}
+    if len(bienio) >= 30:
+        return sorted(bienio), False
+    return sorted({norm_time(m.get("time")) for m in rows if m.get("time")}), False
+
+
+# Início do biênio 2026-2028 da Timemania (Portaria MESP nº 32/2026; vigência de 02/05/2026 a 01/05/2028 segundo
+# a imprensa especializada, que cita a portaria). Atualize junto com a lista a cada biênio.
+BIENIO_TIMEMANIA = date(2026, 5, 2)
+
+
+_TIMES = {}
+
+
 def times_conhecidos():
-    rows = db().execute("SELECT DISTINCT json_extract(meta, '$.time') FROM draws WHERE jogo='timemania'").fetchall()
-    return sorted(r[0] for r in rows if r[0])
+    """Times que já saíram na Timemania. Guardado em memória até chegar concurso novo (ler o JSON de todos os
+    concursos a cada cartão deixava o teste no passado lento)."""
+    chave = db().execute("SELECT COUNT(*), MAX(concurso) FROM draws WHERE jogo='timemania'").fetchone()
+    if chave not in _TIMES:
+        rows = db().execute("SELECT DISTINCT json_extract(meta, '$.time') FROM draws WHERE jogo='timemania'").fetchall()
+        _TIMES.clear()
+        _TIMES[chave] = sorted(r[0] for r in rows if r[0])
+    return _TIMES[chave]
 
 
 def _extra(jogo, txt, validar=False):
@@ -1073,7 +1260,7 @@ def _extra(jogo, txt, validar=False):
     if not txt:
         return None
     t = _norm(txt)
-    if jogo == "diadesorte":
+    if M[jogo].get("extra", ("",))[0] == "mes":
         if t.isdigit() and 1 <= int(t) <= 12:
             return MESES[int(t) - 1]
         achou = [m for m in MESES if t and _norm(m).startswith(t)]
@@ -1085,7 +1272,7 @@ def _extra(jogo, txt, validar=False):
             raise ValueError("Dia de Sorte: informe o mês depois de '+', ex.: 01 02 03 04 05 06 07 + outubro")
         return txt
     if not validar:
-        return t
+        return norm_time(txt)
     times = times_conhecidos()
     if not times:
         return t
@@ -1100,12 +1287,12 @@ def _extra(jogo, txt, validar=False):
 
 def extra_aleatorio(jogo):
     """Time/mês sorteado para apostas sugeridas: nenhum tem mais chance que outro, então qualquer um serve."""
-    if jogo == "timemania":
-        times = times_conhecidos()
+    if M[jogo].get("extra", ("",))[0] == "time":
+        times = times_validos()[0]
         return [random.choice(times)] if times else []
-    if jogo == "diadesorte":
+    if M[jogo].get("extra", ("",))[0] == "mes":
         return [random.choice(MESES)]
-    if jogo == "maismilionaria":
+    if M[jogo].get("trevos"):
         return sorted(random.sample(range(1, 7), 2))
     return []
 
@@ -1116,7 +1303,7 @@ def editar_extra(user, bid, txt):
     if not row:
         raise ValueError("Aposta não encontrada.")
     jogo, dz = row[0], json.loads(row[1])
-    if jogo not in EXTRA and jogo != "maismilionaria":
+    if jogo not in EXTRA and not M[jogo].get("trevos"):
         raise ValueError(f"{jogo} não tem trevos, time nem mês para editar.")
     _, tv = parse_bet(jogo, " ".join(map(str, dz)) + " + " + txt)
     if not tv:
@@ -1170,10 +1357,10 @@ def restore_db(path):
 
 def apostas_simples(jogo, nums, trevos):
     """Quantas apostas simples a aposta equivale (dezenas a mais e trevos a mais multiplicam)."""
-    if jogo == "supersete":
-        return 1
+    if M[jogo].get("colunas"):
+        return math.prod(len(c) for c in colunas(nums))
     mult = math.comb(len(nums), JOGOS[jogo][2])
-    if jogo == "maismilionaria" and trevos:
+    if M[jogo].get("trevos") and trevos:
         mult *= math.comb(len(trevos), 2)
     return mult
 
@@ -1182,15 +1369,11 @@ def custo(jogo, nums, trevos):
     return JOGOS[jogo][4] * apostas_simples(jogo, nums, trevos)
 
 
-NOMES = {"megasena": "Mega-Sena", "lotofacil": "Lotofácil", "quina": "Quina", "lotomania": "Lotomania",
-         "duplasena": "Dupla Sena", "timemania": "Timemania", "diadesorte": "Dia de Sorte",
-         "maismilionaria": "+Milionária", "supersete": "Super Sete"}
+NOMES = {j: m["nome"] for j, m in M.items()}
 
 
 # dias de sorteio (0 = segunda). Feriados e concursos especiais podem mudar a data: confira na lotérica.
-DIAS_SORTEIO = {"megasena": (1, 3, 5), "lotofacil": (0, 1, 2, 3, 4, 5), "quina": (0, 1, 2, 3, 4, 5),
-                "lotomania": (0, 2, 4), "duplasena": (0, 2, 4), "timemania": (1, 3, 5), "diadesorte": (1, 3, 5),
-                "maismilionaria": (2, 5), "supersete": (0, 2, 4)}
+DIAS_SORTEIO = {j: m["dias"] for j, m in M.items()}
 DIAS = ("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")
 
 
@@ -1217,8 +1400,50 @@ def brl(v):
     return "R$ " + f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def colunas(card):
+    """Super Sete: cada coluna como lista de dígitos (aposta simples tem um por coluna)."""
+    return [c if isinstance(c, list) else [c] for c in card]
+
+
+def dist_colunas(card, sorteio):
+    """Super Sete: quantas apostas simples contidas na aposta fazem h colunas certas (h = 0..7)."""
+    dist = [1]
+    for col, d in zip(colunas(card), sorteio):
+        ac = 1 if d in col else 0
+        nova = [0] * (len(dist) + 1)
+        for h, q in enumerate(dist):
+            nova[h] += q * (len(col) - ac)
+            nova[h + 1] += q * ac
+        dist = nova
+    return dist
+
+
+def contidas(jogo, n, h, nt=0, th=0):
+    """Apostas simples dentro de uma aposta de n números com h acertos (e, na +Milionária, nt trevos marcados com th
+    certos): lista de (acertos, trevos certos, quantidade) só para as faixas premiadas. Fonte única para a
+    conferência, o teste no passado e a 'aposta mínima' (antes eram três cópias da mesma conta)."""
+    mn, fx = JOGOS[jogo][2], JOGOS[jogo][3]
+    pares = ({2: math.comb(th, 2), 1: th * (nt - th), 0: math.comb(nt - th, 2)}
+             if M[jogo].get("trevos") and nt else {th: 1})
+    out = []
+    for j in fx:
+        for t2, q2 in pares.items():
+            q = math.comb(h, j) * math.comb(n - h, mn - j) * q2
+            if q:
+                out.append((j, t2, q))
+    return out
+
+
+def espelho(nums):
+    """Lotomania: a aposta-espelho marca os 50 números que ficaram de fora (é uma nova aposta, com preço próprio)."""
+    return [x for x in range(1, 101) if x not in set(nums)]
+
+
 def fmt_bet(jogo, nums, trevos):
-    s = " ".join(str(x) if jogo == "supersete" else f"{x:02d}" for x in nums)
+    if M[jogo].get("colunas"):
+        s = " ".join(",".join(map(str, c)) for c in colunas(nums))
+    else:
+        s = " ".join("00" if M[jogo].get("zero_e_100") and x == 100 else f"{x:02d}" for x in nums)
     return s + (f"  + {' '.join(map(str, trevos))}" if trevos else "")
 
 
@@ -1236,7 +1461,7 @@ def premio(jogo, hits, th, premios):
         m = re.match(r"(\d+) acertos?", d)
         if not m or int(m.group(1)) != hits:
             continue
-        if jogo == "maismilionaria":
+        if M[jogo].get("trevos"):
             r = d[m.end():]
             if not (("2 trevos" in r and th == 2) or ("1 ou nenhum" in r and th <= 1) or
                     ("+ 1 trevo" in r and th == 1)):
@@ -1250,7 +1475,7 @@ def _sorteios(jogo, rows):
     for conc, d, meta in rows:
         d, meta = json.loads(d), json.loads(meta) if meta else {}
         d2 = meta.get("dezenas2")
-        if jogo != "duplasena" or not d2:
+        if M[jogo].get("sorteios") != 2 or not d2:
             yield conc, d, meta
             continue
         pr = meta.get("premios", [])
@@ -1270,8 +1495,8 @@ def check_bets(user):
                          (jogo, desde)).fetchall()
         res, melhor, ganhos = [], 0, 0.0
         for conc, d, meta in _sorteios(jogo, rows):
-            if jogo == "supersete":
-                h, th = sum(a == b for a, b in zip(dz, d)), 0
+            if M[jogo].get("colunas"):
+                h, th = sum(b in c for c, b in zip(colunas(dz), d)), 0
             else:
                 h, th = len(set(dz) & set(d)), len(set(tv) & set(meta.get("trevos", [])))
             melhor = max(melhor, h)
@@ -1280,30 +1505,25 @@ def check_bets(user):
                 val = dict(meta.get("premios", [])).get(desc) or 0
                 ganhos += val
                 res.append((conc, desc, val))
-            if jogo == "supersete":
-                if h not in JOGOS[jogo][3]:
-                    continue
-                p = premio(jogo, h, th, meta.get("premios", []))
-                val = p[1] if p else 0
-                ganhos += val or 0
-                res.append((conc, p[0] if p else f"{h} acertos", val))
-                continue
-            # aposta com mais dezenas/trevos = todas as apostas simples contidas nela
-            mn, nt = JOGOS[jogo][2], len(tv)
-            pares = ({2: math.comb(th, 2), 1: th * (nt - th), 0: math.comb(nt - th, 2)}
-                     if jogo == "maismilionaria" else {th: 1})
-            for j in JOGOS[jogo][3]:
-                for t2, qp in pares.items():
-                    qtd = math.comb(h, j) * math.comb(len(dz) - h, mn - j) * qp
-                    if not qtd:
+            if M[jogo].get("colunas"):   # aposta com mais números = todas as apostas simples contidas nela
+                for hh, qtd in enumerate(dist_colunas(dz, d)):
+                    if hh not in JOGOS[jogo][3] or not qtd:
                         continue
-                    p = premio(jogo, j, t2, meta.get("premios", []))
-                    if jogo == "maismilionaria" and not p:
-                        continue
+                    p = premio(jogo, hh, 0, meta.get("premios", []))
                     val = (p[1] or 0) * qtd if p else 0
                     ganhos += val
-                    desc = p[0] if p else f"{j} acertos"
+                    desc = p[0] if p else f"{hh} acertos"
                     res.append((conc, desc if qtd == 1 else f"{qtd}x {desc}", val))
+                continue
+            # aposta com mais dezenas/trevos = todas as apostas simples contidas nela
+            for j, t2, qtd in contidas(jogo, len(dz), h, len(tv), th):
+                p = premio(jogo, j, t2, meta.get("premios", []))
+                if M[jogo].get("trevos") and not p:
+                    continue
+                val = (p[1] or 0) * qtd if p else 0
+                ganhos += val
+                desc = p[0] if p else f"{j} acertos"
+                res.append((conc, desc if qtd == 1 else f"{qtd}x {desc}", val))
         out.append({"id": bid, "jogo": jogo, "dezenas": dz, "trevos": tv, "desde": desde,
                     "conferidos": len(rows), "melhor": melhor, "ganhos": ganhos, "premiadas": res})
     return out
