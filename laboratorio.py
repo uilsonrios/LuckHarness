@@ -433,6 +433,11 @@ def painel_hoje(user):
                 "'acompanhamento especial' = " + "; ".join(f"{e} no {NOMES_CURTOS.get(j, j)}: {t}"
                                                            for (j, e), t in ACOMPANHAMENTO.items()) + ".",
             "Com poucos concursos o intervalo é largo: um resultado bom ou ruim isolado não prova nada."]
+    try:
+        import popularidade_h3
+        out += ["", popularidade_h3.texto()]
+    except Exception as e:
+        out += ["", f"H3 (popularidade): indisponível ({e})"]
     return "\n".join(out)
 
 
@@ -513,6 +518,13 @@ def ciclo_diario(user, log=print):
                     novos.append(f"{jogo} {alvo} ({nome})")
         except Exception as e:
             log(f"  {jogo}: registro não feito ({e})")
+    try:   # H3: modelo de popularidade selado antes do próximo concurso da Lotofácil (teste prospectivo)
+        import popularidade_h3
+        t = popularidade_h3.selar(log)
+        if t:
+            novos.append(f"lotofacil {t} (H3 popularidade)")
+    except Exception as e:
+        log(f"  H3: selo não feito ({e})")
     return {"registrados": novos, "placar": painel_hoje(user)}
 
 

@@ -1,3 +1,5 @@
 # resultados congelados e critérios pré-registrados: guardados byte a byte (os hashes dependem disso)
 experimentos/aprendizado/*.json -text
 experimentos/criterios_aprendizado.md -text
+experimentos/criterios_h3_popularidade.md -text
+popularidade_h3.py -text
