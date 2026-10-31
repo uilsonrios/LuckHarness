@@ -154,3 +154,14 @@ def test_dupla_sena_dois_sorteios_na_analise_e_popularidade(com_historico):
     s = core.load_sorteios("duplasena", 5)
     assert len(s) == 10 and s[0][0] == s[1][0]
     assert "sorteios (2 por concurso)" in core.analyze("duplasena", s, 6)[0]
+
+
+def test_proximo_sorteio_usa_a_data_oficial():
+    from datetime import date
+    with core.db() as c:
+        c.execute("DELETE FROM draws WHERE jogo='timemania'")
+    _grava("timemania", 1, range(1, 8), data="29/10/2026", proximo="01/11/2026")
+    assert core.proximo_sorteio("timemania", date(2026, 10, 30)) == date(2026, 11, 1)   # oficial (domingo)
+    assert "data oficial da Caixa" in core.texto_calendario(date(2026, 10, 30))
+    # data oficial já passou (resultado ainda não baixado): volta ao calendário de dias habituais
+    assert core.proximo_sorteio("timemania", date(2026, 11, 3)).weekday() in core.DIAS_SORTEIO["timemania"]

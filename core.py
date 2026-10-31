@@ -9,7 +9,7 @@ BASE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ.get("APPDATA", BASE), "luckHarness")
 os.makedirs(DATA, exist_ok=True)
 DB = os.path.join(DATA, "luckharness.db")
-__version__ = "1.16.0"
+__version__ = "1.16.1"
 logging.basicConfig(filename=os.path.join(DATA, "luckharness.log"), level=logging.INFO, encoding="utf8",
                     format="%(asctime)s %(levelname)s %(funcName)s: %(message)s")
 log = logging.getLogger("luckharness")
@@ -1412,10 +1412,25 @@ DIAS_SORTEIO = {j: m["dias"] for j, m in M.items()}
 DIAS = ("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")
 
 
+def proximo_oficial(jogo):
+    """Data oficial do próximo concurso, informada pela Caixa junto com o último resultado (None se não houver)."""
+    r = db().execute("SELECT meta FROM draws WHERE jogo=? ORDER BY concurso DESC LIMIT 1", (jogo,)).fetchone()
+    try:
+        d, m, a = map(int, json.loads(r[0] or "{}")["proximo"].split("/"))
+        return date(a, m, d)
+    except (TypeError, KeyError, ValueError, AttributeError):
+        return None
+
+
 def proximo_sorteio(jogo, hoje=None):
-    """Data do próximo sorteio pelo calendário fixo (hoje conta: o sorteio é à noite)."""
+    """Data do próximo sorteio: a oficial da Caixa quando ainda não passou; senão, o calendário fixo de dias
+    habituais (hoje conta: o sorteio é à noite). Semanas especiais e feriados mudam os dias, por isso a oficial
+    vem primeiro."""
     from datetime import timedelta
     hoje = hoje or date.today()
+    oficial = proximo_oficial(jogo)
+    if oficial and oficial >= hoje:
+        return oficial
     return next(d for d in (hoje + timedelta(i) for i in range(8)) if d.weekday() in DIAS_SORTEIO[jogo])
 
 
@@ -1425,9 +1440,12 @@ def texto_calendario(hoje=None):
     for j in sorted(DIAS_SORTEIO, key=lambda j: proximo_sorteio(j, hoje)):
         d = proximo_sorteio(j, hoje)
         quando = "hoje" if d == hoje else DIAS[d.weekday()] + " " + d.strftime("%d/%m")
+        oficial = proximo_oficial(j) == d
         dias = ", ".join(DIAS[x][:3] for x in DIAS_SORTEIO[j])
-        out.append(f"  {NOMES[j]:<14} {quando:<17} (sorteia {dias})")
-    out.append("Feriados e concursos especiais podem mudar a data.")
+        out.append(f"  {NOMES[j]:<14} {quando:<17} " + ("(data oficial da Caixa)" if oficial else
+                                                       f"(estimada pelos dias habituais: {dias})"))
+    out.append("A data oficial vem com o último resultado; sem ela, o app estima pelos dias habituais, e feriados ou "
+               "semanas especiais podem mudar o dia.")
     return "\n".join(out)
 
 
